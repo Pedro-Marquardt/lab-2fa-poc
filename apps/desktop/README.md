@@ -1,6 +1,6 @@
 # apps/desktop — Bioentropy Lab 2FA
 
-**Thin client** (thin client): UI + LAN pairing + challenge-gated app launch. No PQC, no biometric storage, no wearable seeds.
+**Thin client:** UI + LAN pairing + challenge-gated app launch. No biometric storage; BPM never leaves the phone.
 
 E2E with phone: [`apps/mobile`](../mobile/). Optional audit API: [`apps/api`](../api/). Wire shapes: [`packages/protocol/lab-host-mobile.md`](../../packages/protocol/lab-host-mobile.md).
 
