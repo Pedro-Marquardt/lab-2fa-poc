@@ -1,0 +1,15 @@
+{
+  "name": "bioentropy-desktop",
+  "private": true,
+  "version": "0.1.0",
+  "description": "Bioentropy lab 2FA thin client (Tauri v2)",
+  "type": "module",
+  "scripts": {
+    "tauri": "tauri",
+    "dev": "tauri dev",
+    "build": "tauri build"
+  },
+  "devDependencies": {
+    "@tauri-apps/cli": "^2"
+  }
+}

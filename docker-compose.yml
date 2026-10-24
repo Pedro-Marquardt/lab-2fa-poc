@@ -1,0 +1,47 @@
+# Lab stack — API only.
+# Tauri desktop and Flutter mobile run on the host (not in Docker).
+#
+#   docker compose up --build
+#   # API → http://127.0.0.1:8000  (docs: /docs)
+#
+# Desktop with tickets:
+#   BIOENTROPY_API_URL=http://127.0.0.1:8000 npm run dev
+#   (from apps/desktop)
+
+services:
+  api:
+    build:
+      context: ./apps/api
+      dockerfile: Dockerfile
+    ports:
+      - "8000:8000"
+    environment:
+      # Reserved for future config; store remains in-process for now.
+      BIOENTROPY_ENV: lab
+    # Hot-reload for local lab iteration (comment out for a frozen image).
+    volumes:
+      - ./apps/api/bioentropy_api:/app/bioentropy_api:ro
+    command:
+      [
+        "uvicorn",
+        "bioentropy_api.main:app",
+        "--host",
+        "0.0.0.0",
+        "--port",
+        "8000",
+        "--reload",
+        "--reload-dir",
+        "/app/bioentropy_api",
+      ]
+    healthcheck:
+      test:
+        [
+          "CMD",
+          "python",
+          "-c",
+          "import urllib.request; urllib.request.urlopen('http://127.0.0.1:8000/health')",
+        ]
+      interval: 10s
+      timeout: 3s
+      retries: 5
+      start_period: 5s

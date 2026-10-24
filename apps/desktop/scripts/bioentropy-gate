@@ -1,0 +1,68 @@
+#!/usr/bin/env bash
+# Lab OS gate: if Lab 2FA desktop is up, open via challenge; otherwise passthrough.
+set -euo pipefail
+
+LOCAL_API="${BIOENTROPY_GATE_URL:-http://127.0.0.1:8788}"
+APP_ID=""
+REAL_CMD=()
+
+usage() {
+  echo "Usage: bioentropy-gate --app <appId> -- <real-binary> [args...]" >&2
+  echo "Example: bioentropy-gate --app browser -- /usr/bin/firefox" >&2
+  exit 2
+}
+
+while [[ $# -gt 0 ]]; do
+  case "$1" in
+    --app)
+      APP_ID="${2:-}"
+      shift 2
+      ;;
+    --)
+      shift
+      REAL_CMD=("$@")
+      break
+      ;;
+    -h|--help)
+      usage
+      ;;
+    *)
+      echo "Unknown arg: $1" >&2
+      usage
+      ;;
+  esac
+done
+
+[[ -n "$APP_ID" ]] || usage
+[[ ${#REAL_CMD[@]} -gt 0 ]] || usage
+
+passthrough() {
+  exec "${REAL_CMD[@]}"
+}
+
+# Tauri down → no enforcement.
+if ! curl -sf --max-time 0.4 "$LOCAL_API/health" >/dev/null 2>&1; then
+  passthrough
+fi
+
+body=$(printf '{"appId":"%s"}' "$APP_ID")
+tmp=$(mktemp)
+code=$(curl -sS --max-time 50 \
+  -o "$tmp" -w "%{http_code}" \
+  -X POST "$LOCAL_API/v1/open" \
+  -H "Content-Type: application/json" \
+  -d "$body" || echo "000")
+
+msg=$(cat "$tmp" 2>/dev/null || true)
+rm -f "$tmp"
+
+if [[ "$code" == "200" ]]; then
+  # Desktop spawned the app after challenge; wrapper exits.
+  exit 0
+fi
+
+if command -v notify-send >/dev/null 2>&1; then
+  notify-send "Bioentropy Lab 2FA" "Blocked $APP_ID: ${msg:-http $code}" || true
+fi
+echo "bioentropy-gate: blocked appId=$APP_ID http=$code body=$msg" >&2
+exit 1

@@ -1,0 +1,78 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="UTF-8" />
+    <link rel="stylesheet" href="styles.css" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>Bioentropy Lab 2FA</title>
+    <script type="module" src="/main.js" defer></script>
+  </head>
+  <body>
+    <header class="top">
+      <div>
+        <p class="eyebrow">Bioentropy · thin client</p>
+        <h1>Lab 2FA Desktop</h1>
+      </div>
+      <nav class="tabs" role="tablist">
+        <button type="button" class="tab active" data-tab="pairing" role="tab">
+          Pairing
+        </button>
+        <button type="button" class="tab" data-tab="config" role="tab">
+          Apps
+        </button>
+      </nav>
+    </header>
+
+    <section id="panel-pairing" class="panel active" role="tabpanel">
+      <div class="status-row">
+        <span id="sync-badge" class="badge unpaired">não sincronizado</span>
+        <span id="mobile-badge" class="badge offline">mobile offline</span>
+        <span id="band-badge" class="badge offline">band offline</span>
+      </div>
+
+      <div class="pair-grid">
+        <div class="qr-box" id="qr-box" aria-label="Pairing QR code"></div>
+        <div class="meta">
+          <h2>Scan from phone</h2>
+          <p class="muted">
+            O QR só inicia o pareamento — <strong>não</strong> significa
+            sincronizado. Sincronizado = celular com sessão WS + pulseira a
+            transmitir HR. Com <code>BIOENTROPY_API_URL</code>, o QR inclui
+            ticket de API; biometria nunca sai do telemóvel.
+          </p>
+          <dl class="kv">
+            <dt>WebSocket</dt>
+            <dd id="ws-url">—</dd>
+            <dt>Desktop</dt>
+            <dd id="desktop-name">lab-pc</dd>
+            <dt>Band MAC</dt>
+            <dd id="band-mac">—</dd>
+            <dt>Paired at</dt>
+            <dd id="paired-at">—</dd>
+          </dl>
+          <div class="actions">
+            <button type="button" id="btn-refresh">Refresh QR / LAN IP</button>
+            <button type="button" id="btn-unpair" class="danger" disabled>
+              Unpair
+            </button>
+          </div>
+          <details class="payload">
+            <summary>QR JSON payload</summary>
+            <pre id="qr-json"></pre>
+          </details>
+        </div>
+      </div>
+    </section>
+
+    <section id="panel-config" class="panel" role="tabpanel" hidden>
+      <h2>Gated apps</h2>
+      <p class="muted">
+        O switch <strong>2FA</strong> grava na hora. Ligado: Open só com
+        sync (celular + pulseira) e manda <code>challenge.request</code>.
+        Desligado: abre sem challenge.
+      </p>
+      <div id="apps-list" class="apps-list"></div>
+      <p id="launch-msg" class="launch-msg" aria-live="polite"></p>
+    </section>
+  </body>
+</html>
