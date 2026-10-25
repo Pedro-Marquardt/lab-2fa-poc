@@ -96,7 +96,7 @@ class LabWsClient {
       pairingNonce: qr.pairingNonce,
       bandMac: bandMac,
       deviceLabel: deviceLabel,
-      presenceKey: session.presenceKeyHex,
+      kemPublicKey: session.publicKeyHex,
       kemPubFp: session.kemPubFpHex,
     );
     _send(reg.toJson());
@@ -195,6 +195,7 @@ class LabWsClient {
       await _channel?.sink.close();
     } catch (_) {}
     _channel = null;
+    _session?.wipe();
     _session = null;
     if (_status != LabWsStatus.disconnected) {
       _setStatus(LabWsStatus.disconnected);

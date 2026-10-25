@@ -4,6 +4,7 @@ import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
 import 'package:flutter_dotenv/flutter_dotenv.dart';
 import 'package:permission_handler/permission_handler.dart';
+import 'package:pqcrypto/pqcrypto.dart';
 
 import 'config/env.dart';
 import 'huami/miband.dart';
@@ -386,6 +387,10 @@ class _HomePageState extends State<HomePage> {
             if (samples.isEmpty) {
               reason = 'no_bpm_samples';
             } else {
+              final ss = decapsulateChallenge(
+                secretKey: session.secretKey,
+                kemCiphertextHex: req.kemCiphertext,
+              );
               final bio = deriveBioSeed(
                 BioSeedInput(
                   bpmSamples: samples,
@@ -400,7 +405,7 @@ class _HomePageState extends State<HomePage> {
               final pqc = runPqcDemo(bio.seed32);
               seedDigest = seedDigestHex(bio.seed32);
               presenceProof = computePresenceProof(
-                presenceKeyHex: session.presenceKeyHex,
+                sharedSecret: ss,
                 challengeId: req.challengeId,
                 bandMac: mac,
                 seedDigestHex: seedDigest,
@@ -416,13 +421,14 @@ class _HomePageState extends State<HomePage> {
                   _steps = bio.usedSteps;
                   _spo2 = bio.usedSpo2;
                   _seedMeta =
-                      'Unlock seed: HR×${bio.usedBpm.length} · steps ${bio.usedSteps ?? "—"}'
-                      ' · presence proof';
+                      'Unlock: ML-KEM + HR×${bio.usedBpm.length}'
+                      ' · steps ${bio.usedSteps ?? "—"}';
                 });
               }
               bio.wipe();
+              secureZero(ss);
               ok = true;
-              debugPrint('challenge: presence + PQC proof OK');
+              debugPrint('challenge: ML-KEM proof OK');
             }
           } else if (valid && !_client.hasFreshHr()) {
             reason = 'hr_stale';

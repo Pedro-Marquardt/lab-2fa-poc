@@ -5,15 +5,16 @@ use chrono::{Duration as ChronoDuration, Utc};
 use tokio::sync::oneshot;
 use uuid::Uuid;
 
+use crate::kem_session::encapsulate_to_phone_pk;
 use crate::models::{
     ChallengeOutcome, ChallengeRequest, GatedApp, OpenAppResult, CHALLENGE_TIMEOUT_SECS,
 };
 use crate::presence_proof::{compute_presence_proof, proofs_equal};
-use crate::state::SharedState;
+use crate::state::{PendingChallenge, SharedState};
 use crate::supervisor;
 
 pub async fn open_app(state: SharedState, app_id: String) -> Result<OpenAppResult, String> {
-    let (app_cfg, require_2fa, paired_mac, mobile_tx, synced, presence_key) = {
+    let (app_cfg, require_2fa, paired_mac, mobile_tx, synced, kem_public_key) = {
         let guard = state.lock().await;
         let app = guard
             .config
@@ -27,7 +28,7 @@ pub async fn open_app(state: SharedState, app_id: String) -> Result<OpenAppResul
         let mac = guard.pairing.as_ref().map(|p| p.band_mac.clone());
         let require_2fa = app.require_2fa;
         let synced = guard.is_synced();
-        let presence_key = guard.presence_key.clone();
+        let kem_public_key = guard.kem_public_key.clone();
         eprintln!(
             "[lab-open] appId={app_id} require2fa={require_2fa} synced={synced} paired={} mobile={} band={} cmd={:?}",
             mac.is_some(),
@@ -35,14 +36,13 @@ pub async fn open_app(state: SharedState, app_id: String) -> Result<OpenAppResul
             guard.band_ready,
             app.command
         );
-        (app, require_2fa, mac, tx, synced, presence_key)
+        (app, require_2fa, mac, tx, synced, kem_public_key)
     };
 
     validate_command(&app_cfg)?;
 
     if !require_2fa {
         eprintln!("[lab-open] bypass — require2fa=false, spawning (no mobile challenge)");
-        // Drop any old lease entry; supervisor ignores apps with require2fa=false.
         {
             let mut guard = state.lock().await;
             guard.leases.remove(&app_cfg.id);
@@ -83,12 +83,23 @@ pub async fn open_app(state: SharedState, app_id: String) -> Result<OpenAppResul
         });
     };
 
-    let Some(presence_key) = presence_key else {
-        eprintln!("[lab-open] BLOCK missing presenceKey — re-pair phone");
+    let Some(kem_public_key) = kem_public_key else {
+        eprintln!("[lab-open] BLOCK missing kemPublicKey — re-pair phone");
         return Ok(OpenAppResult {
             launched: false,
-            message: "missing presence key — re-pair phone".into(),
+            message: "missing ML-KEM public key — re-pair phone".into(),
         });
+    };
+
+    let encap = match encapsulate_to_phone_pk(&kem_public_key) {
+        Ok(e) => e,
+        Err(e) => {
+            eprintln!("[lab-open] BLOCK kem encapsulate failed: {e}");
+            return Ok(OpenAppResult {
+                launched: false,
+                message: format!("ML-KEM encapsulate failed: {e}"),
+            });
+        }
     };
 
     let challenge_id = Uuid::new_v4().to_string();
@@ -102,17 +113,20 @@ pub async fn open_app(state: SharedState, app_id: String) -> Result<OpenAppResul
         purpose: "open_app",
         app_id: app_cfg.id.clone(),
         expires_at,
+        kem_ciphertext: encap.ciphertext_hex.clone(),
     };
     let payload = serde_json::to_string(&request).map_err(|e| e.to_string())?;
 
     let (resp_tx, resp_rx) = oneshot::channel::<ChallengeOutcome>();
     {
         let mut guard = state.lock().await;
-        guard.pending_challenges.insert(challenge_id.clone(), resp_tx);
+        guard
+            .pending_challenges
+            .insert(challenge_id.clone(), PendingChallenge { resp_tx });
     }
 
     eprintln!(
-        "[lab-open] challenge.request id={challenge_id} appId={}",
+        "[lab-open] challenge.request id={challenge_id} appId={} (ML-KEM encaps)",
         app_cfg.id
     );
     mobile_tx
@@ -143,6 +157,10 @@ pub async fn open_app(state: SharedState, app_id: String) -> Result<OpenAppResul
             });
         }
     };
+
+    // Recover shared secret for this challenge (still in map only if timed out path cleared).
+    // Outcome path: we already removed pending in ws handler — so we must keep ss locally.
+    let shared_secret = encap.shared_secret;
 
     eprintln!(
         "[lab-open] challenge.result id={challenge_id} ok={} reason={:?} bandMac={:?}",
@@ -199,7 +217,7 @@ pub async fn open_app(state: SharedState, app_id: String) -> Result<OpenAppResul
     }
 
     let expected = match compute_presence_proof(
-        &presence_key,
+        &shared_secret,
         &challenge_id,
         &result_mac,
         &seed_digest,
@@ -215,16 +233,16 @@ pub async fn open_app(state: SharedState, app_id: String) -> Result<OpenAppResul
         }
     };
     if !proofs_equal(&got_proof, &expected) {
-        eprintln!("[lab-open] BLOCK presenceProof mismatch");
+        eprintln!("[lab-open] BLOCK presenceProof mismatch (ML-KEM ss)");
         supervisor::revoke_lease(&state, &app_cfg.id, "presence_proof_mismatch").await;
         return Ok(OpenAppResult {
             launched: false,
-            message: "presence proof mismatch — not launching".into(),
+            message: "ML-KEM presence proof mismatch — not launching".into(),
         });
     }
 
     eprintln!(
-        "[lab-open] OK presence proof + PQC audit — spawning {:?} sha3={}…",
+        "[lab-open] OK ML-KEM proof + PQC audit — spawning {:?} sha3={}…",
         app_cfg.command,
         outcome
             .pqc_sha3
@@ -240,7 +258,7 @@ pub async fn open_app(state: SharedState, app_id: String) -> Result<OpenAppResul
     supervisor::grant_lease(&state, app_cfg.id.clone(), pid).await;
     Ok(OpenAppResult {
         launched: true,
-        message: format!("presence proof ok — launched (pid={pid})"),
+        message: format!("ML-KEM proof ok — launched (pid={pid})"),
     })
 }
 

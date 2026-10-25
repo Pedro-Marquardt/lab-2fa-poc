@@ -51,12 +51,12 @@ void main() {
         pairingNonce: 'n',
         bandMac: 'AA:BB:CC:DD:EE:FF',
         deviceLabel: 'phone',
-        presenceKey: '00' * 32,
+        kemPublicKey: 'aa' * 800,
         kemPubFp: '11' * 32,
       );
       final j = m.toJson();
       expect(j['type'], 'pair.register');
-      expect(j['presenceKey'], '00' * 32);
+      expect(j['kemPublicKey'], 'aa' * 800);
       expect(j.containsKey('bpm'), isFalse);
     });
 
@@ -100,9 +100,11 @@ void main() {
         'purpose': 'open_app',
         'appId': 'app.x',
         'expiresAt': '2026-10-14T00:00:00Z',
+        'kemCiphertext': 'bb' * 768,
       });
       expect(r.challengeId, 'c1');
       expect(r.purpose, 'open_app');
+      expect(r.kemCiphertext.length, 1536);
     });
   });
 

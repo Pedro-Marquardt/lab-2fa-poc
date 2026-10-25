@@ -11,6 +11,10 @@ use crate::supervisor::LeaseMap;
 
 pub type SharedState = Arc<Mutex<LabState>>;
 
+pub struct PendingChallenge {
+    pub resp_tx: oneshot::Sender<ChallengeOutcome>,
+}
+
 pub struct LabState {
     pub pairing_nonce: String,
     pub pairing: Option<PairingRecord>,
@@ -18,8 +22,8 @@ pub struct LabState {
     pub mobile_online: bool,
     /// True when mobile reports band ready via pair.register / presence.update.
     pub band_ready: bool,
-    /// Hex presence key from the current mobile pair session (for proof verify).
-    pub presence_key: Option<String>,
+    /// ML-KEM-512 public key hex from the current mobile pair session.
+    pub kem_public_key: Option<String>,
     /// SHA3-256(ML-KEM pk) from pair — demo/audit only.
     pub kem_pub_fp: Option<String>,
     pub lan_ip: Option<String>,
@@ -29,7 +33,7 @@ pub struct LabState {
     pub api_base_url: Option<String>,
     /// Outbound JSON frames to the connected mobile client.
     pub mobile_tx: Option<mpsc::UnboundedSender<String>>,
-    pub pending_challenges: HashMap<String, oneshot::Sender<ChallengeOutcome>>,
+    pub pending_challenges: HashMap<String, PendingChallenge>,
     /// Active OS-gate leases (appId → root PID we spawned after challenge).
     pub leases: LeaseMap,
 }
@@ -41,7 +45,7 @@ impl LabState {
             pairing: persist::load_pairing(),
             mobile_online: false,
             band_ready: false,
-            presence_key: None,
+            kem_public_key: None,
             kem_pub_fp: None,
             lan_ip: detect_lan_ip(),
             config: persist::load_config(),

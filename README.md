@@ -1,95 +1,72 @@
-# Lab 2FA — Wearable presence + on-device PQC demo
+# Lab 2FA — Wearable presence + ML-KEM unlock
 
 Public portfolio POC: **Mi Band** + phone (Flutter) + desktop (Tauri).
 
-Two ideas in one demo — keep them straight:
-
-| Piece | What it actually does |
-|--------|------------------------|
-| **Wearable 2FA** | Live heart rate proves presence. Unlock sends a **presence proof** the desktop **verifies** (not a naked `ok: true`). Bound to this challenge + paired session. |
-| **On-device PQC** | Same unlock (and the **Generate PQC hash** button) derives a local seed from band signals → matrix → SHA3-256 + ML-KEM-512. **Demo / portfolio** of post-quantum material on-device — it is **not** what makes the 2FA stronger than a normal MAC over the pair session. |
-
-Biometrics (BPM, steps, SpO₂, raw seed) **never leave the phone**.
+| Piece | What it does |
+|--------|----------------|
+| **Wearable gate** | Live heart rate (+ steps) required on the phone before an unlock succeeds. |
+| **ML-KEM unlock (Option A)** | At pair the phone sends an ML-KEM-512 **public key**. On app open the desktop **encapsulates**; the phone **decapsulates** and returns `presenceProof = SHA3(ss ‖ challengeId ‖ bandMac ‖ seedDigest)`. Desktop verifies with its `ss`. |
+| **On-device PQC demo** | **Generate PQC hash** (and unlock) derive a local bio seed → 16×16 matrix → SHA3 + ML-KEM fingerprints. Visual / audit only — biometrics never leave the phone. |
 
 Not production auth. Not medical.
 
-## Why not “just heart rate”?
+## Why this beats “HR → ok: true”
 
-| Approach | Desktop sees | Gap |
-|----------|--------------|-----|
-| HR → `ok: true` | A boolean | Any client on the WS can lie |
-| HR → **presence proof** | `SHA3(presenceKey ‖ challengeId ‖ bandMac ‖ seedDigest)` | Desktop recomputes; needs the pair session + this challenge |
-
-The useful jump for 2FA is **verifiable proof**, not ML-KEM by itself.
+| Approach | Desktop verifies |
+|----------|------------------|
+| HR → `ok: true` | Nothing cryptographic |
+| **ML-KEM encaps + presenceProof** | Shared secret from KEM + challenge binding |
 
 ## Flow
 
 ```
-Pair (QR / LAN WS)
-  phone: ML-KEM session → presenceKey (+ kemPubFp audit)
-  desktop: stores presenceKey + band MAC
+Pair (QR)
+  phone → ML-KEM keygen → kemPublicKey (sk stays on phone)
 
 Unlock gated app
-  desktop → challenge.request (challengeId)
-  phone  → live HR (+ steps) → bio seed (wipe after)
-         → seedDigest + PQC audit (SHA3 / ML-KEM fp)
-         → presenceProof
-  desktop → verify proof → launch (or deny)
+  desktop → encapsulate(pk) → (ct, ss) → challenge.request + kemCiphertext
+  phone   → live HR → bio seed → decapsulate(ct) → presenceProof
+  desktop → recompute proof with ss → launch or deny
 ```
 
-**Generate PQC hash** on the phone is the visual explainer (matrix + hashes). Unlock runs that pipeline again with a **fresh** seed each time — nothing durable is stored as “the” seed.
+Each unlock uses a **fresh** bio seed (wiped after). Re-pair after restarting a session.
 
 ## Layout
 
 ```
-apps/
-  mobile/     # Flutter — Mi Band BLE, QR/WS, seed + PQC demo, presence proof
-  desktop/    # Tauri — QR, WS :8787, proof verify, gated launcher
-  api/        # FastAPI — optional tickets / non-biometric audit
-packages/
-  protocol/   # Frozen host↔mobile JSON shapes
-docs/
-  research/   # Mi Band / Huami notes
+apps/mobile/    Flutter — BLE, QR/WS, seed demo, ML-KEM decaps
+apps/desktop/   Tauri — QR, WS :8787, ML-KEM encaps, gated launcher
+apps/api/       optional FastAPI tickets
+packages/protocol/  frozen JSON shapes
 ```
 
 ## Quick start
 
-**Desktop**
-
 ```bash
-cd apps/desktop
-npm install
-npm run dev
+cd apps/desktop && npm install && npm run dev
 ```
-
-**Mobile**
 
 ```bash
 cd apps/mobile
 cp .env.example .env   # MIBAND_AUTH_KEY + optional MIBAND_MAC
-flutter pub get
-flutter run
+flutter pub get && flutter run
 ```
 
-Phone and PC on the same Wi‑Fi. Force-stop Mi Fitness before connecting the band.
-
-Optional API: `apps/api` or `docker compose up --build`.
+Same Wi‑Fi. Force-stop Mi Fitness before connecting the band.
 
 ## Demo script
 
-1. Connect Mi Band → HR (+ steps) on the phone  
-2. Optional: **Generate PQC hash** → matrix + SHA3 + ML-KEM fingerprint  
-3. Scan desktop QR → pair (session `presenceKey`)  
-4. Toggle **2FA** on an app → open it → phone proves presence + proof → desktop verifies → app launches  
-
-Re-pair after restarting the desktop/phone session so `presenceKey` matches.
+1. Connect Mi Band  
+2. Optional: **Generate PQC hash** (matrix + digests)  
+3. Pair via QR  
+4. **Add apps** → enable 2FA → Open → phone proves ML-KEM + presence → app launches  
 
 ## Privacy
 
-- No BPM / SpO₂ / steps / seed on the wire — digests + proof only  
+- No BPM / seed / ML-KEM secret key on the wire  
 - Contract: [`packages/protocol/lab-host-mobile.md`](packages/protocol/lab-host-mobile.md)  
-- Do not commit `.env` or Huami auth keys  
+- Do not commit `.env` / Huami auth keys  
 
 ## Status
 
-Lab / portfolio quality. Honest scope: wearable presence + verifiable challenge proof; PQC as an on-device demo layered on the same seed path.
+Lab / portfolio quality. ML-KEM-512 interop verified between Dart `pqcrypto` and Rust `ml-kem`.

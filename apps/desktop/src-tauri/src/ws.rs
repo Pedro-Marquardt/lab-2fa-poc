@@ -54,7 +54,7 @@ async fn handle_connection(
         guard.mobile_tx = Some(tx);
         guard.mobile_online = false;
         guard.band_ready = false;
-        guard.presence_key = None;
+        guard.kem_public_key = None;
         guard.kem_pub_fp = None;
         let _ = emit_status(&app, &guard);
     }
@@ -95,13 +95,13 @@ async fn handle_connection(
         let mut guard = state.lock().await;
         guard.mobile_online = false;
         guard.band_ready = false;
-        guard.presence_key = None;
+        guard.kem_public_key = None;
         guard.kem_pub_fp = None;
         guard.mobile_tx = None;
         // Fail any in-flight challenges on disconnect.
         let pending = std::mem::take(&mut guard.pending_challenges);
-        for (_, tx) in pending {
-            let _ = tx.send(crate::models::ChallengeOutcome {
+        for (_, pending) in pending {
+            let _ = pending.resp_tx.send(crate::models::ChallengeOutcome {
                 ok: false,
                 band_mac: None,
                 reason: Some("mobile_disconnected".into()),
@@ -141,12 +141,12 @@ async fn on_mobile_message(
                 return Err("pairingNonce mismatch".into());
             }
 
-            let presence_key = msg
-                .presence_key
+            let kem_public_key = msg
+                .kem_public_key
                 .filter(|s| !s.is_empty())
-                .ok_or_else(|| "missing presenceKey".to_string())?;
-            if hex::decode(&presence_key).map(|b| b.len()).unwrap_or(0) != 32 {
-                return Err("presenceKey must be 32 bytes hex".into());
+                .ok_or_else(|| "missing kemPublicKey".to_string())?;
+            if hex::decode(&kem_public_key).map(|b| b.len()).unwrap_or(0) != 800 {
+                return Err("kemPublicKey must be 800 bytes hex (ML-KEM-512)".into());
             }
 
             let record = PairingRecord {
@@ -156,7 +156,7 @@ async fn on_mobile_message(
             };
             persist::save_pairing(&record)?;
             guard.pairing = Some(record);
-            guard.presence_key = Some(presence_key);
+            guard.kem_public_key = Some(kem_public_key);
             guard.kem_pub_fp = msg.kem_pub_fp.filter(|s| !s.is_empty());
             guard.mobile_online = true;
             // Pair only happens after mobile ensured HR streaming — mark ready.
@@ -196,8 +196,8 @@ async fn on_mobile_message(
                 .challenge_id
                 .ok_or_else(|| "missing challengeId".to_string())?;
             let mut guard = state.lock().await;
-            if let Some(tx) = guard.pending_challenges.remove(&challenge_id) {
-                let _ = tx.send(crate::models::ChallengeOutcome {
+            if let Some(pending) = guard.pending_challenges.remove(&challenge_id) {
+                let _ = pending.resp_tx.send(crate::models::ChallengeOutcome {
                     ok: msg.ok.unwrap_or(false),
                     band_mac: msg.band_mac,
                     reason: msg.reason,

@@ -5,60 +5,71 @@ import 'dart:typed_data';
 import 'package:convert/convert.dart';
 import 'package:pqcrypto/pqcrypto.dart';
 
-/// Session material established at pair (local WS after QR).
-///
-/// Desktop stores [presenceKeyHex] and verifies unlock proofs.
-/// [kemPubFpHex] is audit/UI only — shows ML-KEM ran at pair.
+/// ML-KEM-512 session established at pair (phone keeps [secretKey]).
 class PairingSessionPqc {
-  const PairingSessionPqc({
-    required this.presenceKeyHex,
+  PairingSessionPqc({
+    required this.publicKeyHex,
+    required this.secretKey,
     required this.kemPubFpHex,
   });
 
-  /// 32-byte key, hex — used to MAC challenges (never physio).
-  final String presenceKeyHex;
+  /// ML-KEM-512 public key (hex) — sent to desktop at pair.
+  final String publicKeyHex;
 
-  /// SHA3-256(ML-KEM-512 public key), hex.
+  /// Decapsulation key kept only in phone memory for this WS session.
+  final Uint8List secretKey;
+
+  /// SHA3-256(pk) for UI / audit.
   final String kemPubFpHex;
+
+  void wipe() {
+    secureZero(secretKey);
+  }
 }
 
-/// Fresh ML-KEM-512 session → presence key + pubkey fingerprint.
+/// Fresh ML-KEM-512 keypair for the pairing session.
 PairingSessionPqc createPairingSessionPqc() {
   final seed = _randomBytes(64);
   final kem = KyberKem(KyberLevel.kem512);
   final (pk, sk) = kem.generateKeyPair(seed);
   secureZero(seed);
 
-  // Presence key is derived from the secret key material (local pair channel).
-  final presenceKey = sha3256(sk);
   final kemPubFp = sha3256(pk);
-
   final out = PairingSessionPqc(
-    presenceKeyHex: hex.encode(presenceKey),
+    publicKeyHex: hex.encode(pk),
+    secretKey: Uint8List.fromList(sk),
     kemPubFpHex: hex.encode(kemPubFp),
   );
-
-  secureZero(sk);
   secureZero(pk);
-  secureZero(presenceKey);
+  secureZero(sk);
   secureZero(kemPubFp);
   return out;
 }
 
-/// Verifiable unlock proof:
-/// `SHA3(presenceKey ‖ challengeId ‖ bandMac ‖ seedDigest)`.
-///
-/// [seedDigestHex] is SHA3 of the on-device bio seed (not the seed itself).
+/// Decapsulate desktop ciphertext → 32-byte shared secret.
+Uint8List decapsulateChallenge({
+  required Uint8List secretKey,
+  required String kemCiphertextHex,
+}) {
+  final ct = Uint8List.fromList(hex.decode(kemCiphertextHex.trim()));
+  final kem = KyberKem(KyberLevel.kem512);
+  return kem.decapsulate(secretKey, ct);
+}
+
+/// Unlock proof (Option A):
+/// `SHA3(ss ‖ challengeId ‖ bandMac ‖ seedDigest)`.
 String computePresenceProof({
-  required String presenceKeyHex,
+  required Uint8List sharedSecret,
   required String challengeId,
   required String bandMac,
   required String seedDigestHex,
 }) {
-  final key = Uint8List.fromList(hex.decode(presenceKeyHex));
+  if (sharedSecret.length != 32) {
+    throw ArgumentError('sharedSecret must be 32 bytes');
+  }
   final mac = bandMac.trim().toUpperCase();
   final material = BytesBuilder(copy: false)
-    ..add(key)
+    ..add(sharedSecret)
     ..add(utf8.encode(challengeId))
     ..addByte(0x00)
     ..add(utf8.encode(mac))
@@ -67,7 +78,6 @@ String computePresenceProof({
   final bytes = material.toBytes();
   final digest = sha3256(bytes);
   final out = hex.encode(digest);
-  secureZero(key);
   secureZero(bytes);
   secureZero(digest);
   return out;

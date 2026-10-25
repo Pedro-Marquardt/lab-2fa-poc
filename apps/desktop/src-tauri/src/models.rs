@@ -88,9 +88,9 @@ pub struct MobileMessage {
     /// `presence.update` — band HR streaming / ready (no BPM values).
     #[serde(default)]
     pub band_ready: Option<bool>,
-    /// `pair.register` — hex session key for unlock proof verification.
+    /// `pair.register` — ML-KEM-512 public key (hex, 800 bytes).
     #[serde(default)]
-    pub presence_key: Option<String>,
+    pub kem_public_key: Option<String>,
     /// `pair.register` — SHA3-256(ML-KEM pk) audit fingerprint.
     #[serde(default)]
     pub kem_pub_fp: Option<String>,
@@ -118,6 +118,8 @@ pub struct ChallengeRequest {
     pub purpose: &'static str,
     pub app_id: String,
     pub expires_at: String,
+    /// ML-KEM-512 ciphertext (hex) for the phone to decapsulate.
+    pub kem_ciphertext: String,
 }
 
 #[derive(Debug, Clone)]

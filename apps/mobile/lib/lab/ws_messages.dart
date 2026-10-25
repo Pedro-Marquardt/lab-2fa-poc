@@ -4,7 +4,7 @@ class PairRegisterMessage {
     required this.pairingNonce,
     required this.bandMac,
     this.deviceLabel = 'phone',
-    this.presenceKey,
+    this.kemPublicKey,
     this.kemPubFp,
   });
 
@@ -12,10 +12,10 @@ class PairRegisterMessage {
   final String bandMac;
   final String deviceLabel;
 
-  /// Hex SHA3-derived session key for unlock proofs (local pair only).
-  final String? presenceKey;
+  /// ML-KEM-512 public key (hex, 800 bytes) for desktop encapsulate.
+  final String? kemPublicKey;
 
-  /// Hex SHA3-256(ML-KEM-512 pk) — audit / demo display.
+  /// Hex SHA3-256(ML-KEM pk) — audit / demo display.
   final String? kemPubFp;
 
   Map<String, dynamic> toJson() => {
@@ -24,7 +24,7 @@ class PairRegisterMessage {
         'pairingNonce': pairingNonce,
         'bandMac': bandMac,
         'deviceLabel': deviceLabel,
-        if (presenceKey != null) 'presenceKey': presenceKey,
+        if (kemPublicKey != null) 'kemPublicKey': kemPublicKey,
         if (kemPubFp != null) 'kemPubFp': kemPubFp,
       };
 }
@@ -35,12 +35,16 @@ class ChallengeRequest {
     required this.purpose,
     required this.appId,
     required this.expiresAt,
+    required this.kemCiphertext,
   });
 
   final String challengeId;
   final String purpose;
   final String appId;
   final String expiresAt;
+
+  /// ML-KEM-512 ciphertext (hex) from desktop encapsulate.
+  final String kemCiphertext;
 
   factory ChallengeRequest.fromJson(Map<String, dynamic> json) {
     String req(String key) {
@@ -56,6 +60,7 @@ class ChallengeRequest {
       purpose: req('purpose'),
       appId: req('appId'),
       expiresAt: req('expiresAt'),
+      kemCiphertext: req('kemCiphertext'),
     );
   }
 }
@@ -77,7 +82,7 @@ class ChallengeResultMessage {
   final String bandMac;
   final String? reason;
 
-  /// SHA3 presence proof (verifiable by desktop with pair presenceKey).
+  /// SHA3(ss ‖ challengeId ‖ bandMac ‖ seedDigest).
   final String? presenceProof;
 
   /// SHA3(bio seed) — not the seed; binds proof to this unlock's on-device seed.

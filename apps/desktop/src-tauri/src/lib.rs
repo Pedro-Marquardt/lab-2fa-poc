@@ -1,6 +1,7 @@
 mod api_ticket;
 mod commands;
 mod installed_apps;
+mod kem_session;
 mod launcher;
 mod local_api;
 mod models;
