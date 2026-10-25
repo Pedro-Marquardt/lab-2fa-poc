@@ -67,7 +67,7 @@ Large-scale quantum computers threaten the public-key schemes we still use for k
 ### A. Pair (create the ML-KEM session)
 
 1. Phone and PC on the **same Wi‑Fi**; force-stop Mi Fitness; connect the Mi Band in the Flutter app (HR streaming).
-2. Desktop: **Refresh QR** (commits a fresh `pairingNonce`; optional API ticket if `BIOENTROPY_API_URL` is set).
+2. Desktop: **Refresh QR** (commits a fresh `pairingNonce`).
 3. Phone: **Pair with desktop** → scan the QR (`wsUrl` + nonce).
 4. Phone generates ML-KEM-512 `(pk, sk)`, sends `pair.register` with `kemPublicKey` + nonce + `bandMac`.
 5. Desktop checks nonce + pk length → persists pairing → replies **`pair.ok`** (or **`pair.error`** with a reason).
@@ -96,9 +96,9 @@ Large-scale quantum computers threaten the public-key schemes we still use for k
                                  └───────┬───────┘
                     QR + WS :8787        │
               pair.register / challenge.*│
-                                 ┌───────▼───────┐
-                                 │ Tauri desktop │
-                                 │  pk, encaps   │
+                                 ┌───────▼───────┐     optional tickets
+                                 │ Tauri desktop │ ··············► apps/api
+                                 │  pk, encaps   │                    :8000
                                  │  gate + lease │
                                  └───────────────┘
 ```
@@ -108,30 +108,68 @@ Large-scale quantum computers threaten the public-key schemes we still use for k
 ```
 apps/mobile/         Flutter — BLE, QR/WS, seed demo, ML-KEM decaps
 apps/desktop/        Tauri — QR, WS :8787, ML-KEM encaps, gated launcher
-apps/api/            optional FastAPI pairing tickets
+apps/api/            optional FastAPI — pairing tickets (audit only)
 packages/protocol/   frozen JSON shapes
+scripts/             helpers (e.g. Mi Band auth-key watch via adb)
 ```
 
 Wire contract: [`packages/protocol/lab-host-mobile.md`](packages/protocol/lab-host-mobile.md)
 
 ## Quick start
 
+Core demo is **local**: phone ↔ desktop over LAN QR + WebSocket. The API is **optional**.
+
+### 1. Mi Band auth key
+
+The band needs Huami “New Auth”. Pair it once in **Zepp Life** / Mi Fitness, then extract the **32-hex auth key**.
+
+Short path (recommended): [huami-token](https://github.com/argrento/huami-token)
+
+```bash
+huami-token --method amazfit --email YOUR_EMAIL --password YOUR_PASSWORD --bt_keys
+```
+
+Copy the device `Key` into `apps/mobile/.env` as `MIBAND_AUTH_KEY=...` (optional `MIBAND_MAC=AA:BB:...`).
+
+Details, log/`adb` methods, and “don’t unpair” rules: [`docs/research/miband-auth-key.md`](docs/research/miband-auth-key.md).  
+Helper script: `./scripts/miband-watch-authkey.sh` (USB debugging on; force-stop the official app while the lab holds BLE).
+
+### 2. Desktop
+
 ```bash
 cd apps/desktop && npm install && npm run dev
 ```
 
+### 3. Mobile
+
 ```bash
 cd apps/mobile
-cp .env.example .env   # MIBAND_AUTH_KEY + optional MIBAND_MAC
+cp .env.example .env   # set MIBAND_AUTH_KEY
 flutter pub get && flutter run
 ```
 
-Same LAN; allow TCP **8787**. Optional: `BIOENTROPY_API_URL=http://127.0.0.1:8000` on the desktop.
+Same LAN; allow TCP **8787**. Force-stop Mi Fitness / Zepp Life before connecting the band in Flutter.
+
+### Optional API (pairing tickets)
+
+Not required for Sync or unlock. If set, the desktop mints a ticket and embeds `apiTicketId` + `apiBaseUrl` in the QR; the phone completes the ticket best-effort after `pair.ok` (audit metadata only — no biometrics).
+
+```bash
+# terminal A
+cd apps/api && python3 -m venv .venv && source .venv/bin/activate
+pip install -e .
+uvicorn bioentropy_api.main:app --reload --host 0.0.0.0 --port 8000
+
+# terminal B
+cd apps/desktop
+BIOENTROPY_API_URL=http://127.0.0.1:8000 npm run dev
+```
+
+Or `docker compose up --build` from the repo root. See [`apps/api/README.md`](apps/api/README.md).
 
 ## Privacy
 
-- No BPM / raw bio seed / ML-KEM secret key on the wire
-- Do not commit `.env` / Huami auth keys
+No BPM / raw bio seed / ML-KEM secret key on the wire.
 
 ## Status
 
