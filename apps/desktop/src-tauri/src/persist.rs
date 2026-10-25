@@ -74,10 +74,6 @@ pub fn default_config() -> AppConfig {
         .map(|p| vec![p])
         .unwrap_or_else(|| vec!["xdg-open".into(), ".".into()]);
 
-    let editor = first_available(&["code", "codium", "gedit", "kate", "mousepad"])
-        .map(|p| vec![p])
-        .unwrap_or_else(|| vec!["xdg-open".into(), ".".into()]);
-
     AppConfig {
         apps: vec![
             GatedApp {
@@ -101,22 +97,13 @@ pub fn default_config() -> AppConfig {
                 require_2fa: true,
                 curated: true,
             },
-            GatedApp {
-                id: "editor".into(),
-                label: "Editor".into(),
-                command: editor,
-                require_2fa: true,
-                curated: true,
-            },
-            GatedApp {
-                id: "custom".into(),
-                label: "Custom".into(),
-                command: vec![String::new()],
-                require_2fa: false,
-                curated: false,
-            },
         ],
     }
+}
+
+fn scrub_legacy_apps(mut config: AppConfig) -> AppConfig {
+    config.apps.retain(|a| a.id != "custom" && a.id != "editor");
+    config
 }
 
 pub fn load_config() -> AppConfig {
@@ -125,7 +112,15 @@ pub fn load_config() -> AppConfig {
         Err(_) => return default_config(),
     };
     match fs::read_to_string(&path) {
-        Ok(raw) => serde_json::from_str(&raw).unwrap_or_else(|_| default_config()),
+        Ok(raw) => {
+            let before: AppConfig =
+                serde_json::from_str(&raw).unwrap_or_else(|_| default_config());
+            let after = scrub_legacy_apps(before.clone());
+            if after.apps.len() != before.apps.len() {
+                let _ = save_config(&after);
+            }
+            after
+        }
         Err(_) => default_config(),
     }
 }

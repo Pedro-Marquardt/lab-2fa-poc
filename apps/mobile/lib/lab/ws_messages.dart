@@ -4,11 +4,19 @@ class PairRegisterMessage {
     required this.pairingNonce,
     required this.bandMac,
     this.deviceLabel = 'phone',
+    this.presenceKey,
+    this.kemPubFp,
   });
 
   final String pairingNonce;
   final String bandMac;
   final String deviceLabel;
+
+  /// Hex SHA3-derived session key for unlock proofs (local pair only).
+  final String? presenceKey;
+
+  /// Hex SHA3-256(ML-KEM-512 pk) — audit / demo display.
+  final String? kemPubFp;
 
   Map<String, dynamic> toJson() => {
         'v': 1,
@@ -16,6 +24,8 @@ class PairRegisterMessage {
         'pairingNonce': pairingNonce,
         'bandMac': bandMac,
         'deviceLabel': deviceLabel,
+        if (presenceKey != null) 'presenceKey': presenceKey,
+        if (kemPubFp != null) 'kemPubFp': kemPubFp,
       };
 }
 
@@ -56,12 +66,28 @@ class ChallengeResultMessage {
     required this.ok,
     required this.bandMac,
     this.reason,
+    this.presenceProof,
+    this.seedDigest,
+    this.pqcSha3,
+    this.pqcKemFp,
   });
 
   final String challengeId;
   final bool ok;
   final String bandMac;
   final String? reason;
+
+  /// SHA3 presence proof (verifiable by desktop with pair presenceKey).
+  final String? presenceProof;
+
+  /// SHA3(bio seed) — not the seed; binds proof to this unlock's on-device seed.
+  final String? seedDigest;
+
+  /// SHA3-256(seed) from the same PQC demo pipeline (audit / UI).
+  final String? pqcSha3;
+
+  /// ML-KEM-512 pubkey fingerprint from the demo pipeline (audit / UI).
+  final String? pqcKemFp;
 
   Map<String, dynamic> toJson() => {
         'v': 1,
@@ -70,6 +96,10 @@ class ChallengeResultMessage {
         'ok': ok,
         'bandMac': bandMac,
         'reason': reason,
+        if (presenceProof != null) 'presenceProof': presenceProof,
+        if (seedDigest != null) 'seedDigest': seedDigest,
+        if (pqcSha3 != null) 'pqcSha3': pqcSha3,
+        if (pqcKemFp != null) 'pqcKemFp': pqcKemFp,
       };
 }
 

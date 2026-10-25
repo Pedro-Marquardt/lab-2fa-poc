@@ -5,6 +5,7 @@ import 'package:flutter/foundation.dart';
 import 'package:web_socket_channel/web_socket_channel.dart';
 
 import 'api_ticket.dart';
+import 'presence_proof.dart';
 import 'qr_payload.dart';
 import 'ws_messages.dart';
 
@@ -18,11 +19,12 @@ enum LabWsStatus {
 }
 
 /// Cliente WS lab: pair.register + challenge.result.
-/// Nunca envia BPM — só ok + bandMac + reason.
+/// Nunca envia BPM/seed — só ok, MAC, presence proof + PQC audit digests.
 class LabWsClient {
   WebSocketChannel? _channel;
   StreamSubscription<dynamic>? _sub;
   PairingQr? _pairing;
+  PairingSessionPqc? _session;
 
   final _statusCtrl = StreamController<LabWsStatus>.broadcast();
   final _logCtrl = StreamController<String>.broadcast();
@@ -32,6 +34,7 @@ class LabWsClient {
   LabWsStatus _status = LabWsStatus.disconnected;
   LabWsStatus get status => _status;
   PairingQr? get pairing => _pairing;
+  PairingSessionPqc? get session => _session;
   ChallengeResultMessage? lastResult;
 
   Stream<LabWsStatus> get status$ => _statusCtrl.stream;
@@ -57,6 +60,7 @@ class LabWsClient {
     await disconnect();
     _pairing = qr;
     lastResult = null;
+    _session = createPairingSessionPqc();
     _setStatus(LabWsStatus.connecting);
     _log('WS → ${qr.wsUrl} (${qr.desktopName})');
 
@@ -87,13 +91,19 @@ class LabWsClient {
       },
     );
 
+    final session = _session!;
     final reg = PairRegisterMessage(
       pairingNonce: qr.pairingNonce,
       bandMac: bandMac,
       deviceLabel: deviceLabel,
+      presenceKey: session.presenceKeyHex,
+      kemPubFp: session.kemPubFpHex,
     );
     _send(reg.toJson());
-    _log('pair.register enviado (bandMac=$bandMac)');
+    _log(
+      'pair.register enviado (bandMac=$bandMac, '
+      'kemPubFp=${session.kemPubFpHex.substring(0, 16)}…)',
+    );
     _setStatus(LabWsStatus.paired);
 
     final ticketId = qr.apiTicketId;
@@ -185,6 +195,7 @@ class LabWsClient {
       await _channel?.sink.close();
     } catch (_) {}
     _channel = null;
+    _session = null;
     if (_status != LabWsStatus.disconnected) {
       _setStatus(LabWsStatus.disconnected);
     }

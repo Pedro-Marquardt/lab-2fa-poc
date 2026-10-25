@@ -1,6 +1,7 @@
 use tauri::State;
 
 use crate::api_ticket::{api_base_url_from_env, create_pairing_ticket};
+use crate::installed_apps::{self, InstalledApp};
 use crate::launcher;
 use crate::models::{AppConfig, LabStatus, OpenAppResult};
 use crate::persist;
@@ -85,12 +86,20 @@ pub async fn get_config(state: State<'_, SharedState>) -> Result<AppConfig, Stri
 #[tauri::command]
 pub async fn save_config(
     state: State<'_, SharedState>,
-    config: AppConfig,
+    mut config: AppConfig,
 ) -> Result<AppConfig, String> {
+    config
+        .apps
+        .retain(|a| a.id != "custom" && a.id != "editor");
     persist::save_config(&config)?;
     let mut guard = state.lock().await;
     guard.config = config.clone();
     Ok(config)
+}
+
+#[tauri::command]
+pub async fn list_installed_apps() -> Result<Vec<InstalledApp>, String> {
+    installed_apps::list_installed_apps()
 }
 
 #[tauri::command]

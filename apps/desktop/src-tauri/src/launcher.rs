@@ -8,11 +8,12 @@ use uuid::Uuid;
 use crate::models::{
     ChallengeOutcome, ChallengeRequest, GatedApp, OpenAppResult, CHALLENGE_TIMEOUT_SECS,
 };
+use crate::presence_proof::{compute_presence_proof, proofs_equal};
 use crate::state::SharedState;
 use crate::supervisor;
 
 pub async fn open_app(state: SharedState, app_id: String) -> Result<OpenAppResult, String> {
-    let (app_cfg, require_2fa, paired_mac, mobile_tx, synced) = {
+    let (app_cfg, require_2fa, paired_mac, mobile_tx, synced, presence_key) = {
         let guard = state.lock().await;
         let app = guard
             .config
@@ -26,6 +27,7 @@ pub async fn open_app(state: SharedState, app_id: String) -> Result<OpenAppResul
         let mac = guard.pairing.as_ref().map(|p| p.band_mac.clone());
         let require_2fa = app.require_2fa;
         let synced = guard.is_synced();
+        let presence_key = guard.presence_key.clone();
         eprintln!(
             "[lab-open] appId={app_id} require2fa={require_2fa} synced={synced} paired={} mobile={} band={} cmd={:?}",
             mac.is_some(),
@@ -33,7 +35,7 @@ pub async fn open_app(state: SharedState, app_id: String) -> Result<OpenAppResul
             guard.band_ready,
             app.command
         );
-        (app, require_2fa, mac, tx, synced)
+        (app, require_2fa, mac, tx, synced, presence_key)
     };
 
     validate_command(&app_cfg)?;
@@ -78,6 +80,14 @@ pub async fn open_app(state: SharedState, app_id: String) -> Result<OpenAppResul
         return Ok(OpenAppResult {
             launched: false,
             message: "mobile offline — not launching".into(),
+        });
+    };
+
+    let Some(presence_key) = presence_key else {
+        eprintln!("[lab-open] BLOCK missing presenceKey — re-pair phone");
+        return Ok(OpenAppResult {
+            launched: false,
+            message: "missing presence key — re-pair phone".into(),
         });
     };
 
@@ -161,7 +171,67 @@ pub async fn open_app(state: SharedState, app_id: String) -> Result<OpenAppResul
         });
     }
 
-    eprintln!("[lab-open] OK challenge passed — spawning {:?}", app_cfg.command);
+    let Some(got_proof) = outcome.presence_proof.filter(|s| !s.is_empty()) else {
+        eprintln!("[lab-open] BLOCK missing presenceProof");
+        supervisor::revoke_lease(&state, &app_cfg.id, "missing_presence_proof").await;
+        return Ok(OpenAppResult {
+            launched: false,
+            message: "challenge missing presence proof".into(),
+        });
+    };
+    let Some(seed_digest) = outcome.seed_digest.filter(|s| !s.is_empty()) else {
+        eprintln!("[lab-open] BLOCK missing seedDigest");
+        supervisor::revoke_lease(&state, &app_cfg.id, "missing_seed_digest").await;
+        return Ok(OpenAppResult {
+            launched: false,
+            message: "challenge missing seed digest".into(),
+        });
+    };
+    if outcome.pqc_sha3.as_ref().map(|s| s.len()).unwrap_or(0) < 16
+        || outcome.pqc_kem_fp.as_ref().map(|s| s.len()).unwrap_or(0) < 16
+    {
+        eprintln!("[lab-open] BLOCK missing PQC audit fields");
+        supervisor::revoke_lease(&state, &app_cfg.id, "missing_pqc_audit").await;
+        return Ok(OpenAppResult {
+            launched: false,
+            message: "challenge missing PQC audit fields".into(),
+        });
+    }
+
+    let expected = match compute_presence_proof(
+        &presence_key,
+        &challenge_id,
+        &result_mac,
+        &seed_digest,
+    ) {
+        Ok(v) => v,
+        Err(e) => {
+            eprintln!("[lab-open] BLOCK proof compute failed: {e}");
+            supervisor::revoke_lease(&state, &app_cfg.id, "proof_compute").await;
+            return Ok(OpenAppResult {
+                launched: false,
+                message: format!("presence proof error: {e}"),
+            });
+        }
+    };
+    if !proofs_equal(&got_proof, &expected) {
+        eprintln!("[lab-open] BLOCK presenceProof mismatch");
+        supervisor::revoke_lease(&state, &app_cfg.id, "presence_proof_mismatch").await;
+        return Ok(OpenAppResult {
+            launched: false,
+            message: "presence proof mismatch — not launching".into(),
+        });
+    }
+
+    eprintln!(
+        "[lab-open] OK presence proof + PQC audit — spawning {:?} sha3={}…",
+        app_cfg.command,
+        outcome
+            .pqc_sha3
+            .as_ref()
+            .map(|s| s.chars().take(16).collect::<String>())
+            .unwrap_or_default()
+    );
     let mut child = spawn_process(&app_cfg)?;
     let pid = child.id();
     std::thread::spawn(move || {
@@ -170,7 +240,7 @@ pub async fn open_app(state: SharedState, app_id: String) -> Result<OpenAppResul
     supervisor::grant_lease(&state, app_cfg.id.clone(), pid).await;
     Ok(OpenAppResult {
         launched: true,
-        message: format!("challenge ok — launched (pid={pid})"),
+        message: format!("presence proof ok — launched (pid={pid})"),
     })
 }
 

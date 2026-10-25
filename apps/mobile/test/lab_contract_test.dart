@@ -51,22 +51,34 @@ void main() {
         pairingNonce: 'n',
         bandMac: 'AA:BB:CC:DD:EE:FF',
         deviceLabel: 'phone',
+        presenceKey: '00' * 32,
+        kemPubFp: '11' * 32,
       );
       final j = m.toJson();
       expect(j['type'], 'pair.register');
+      expect(j['presenceKey'], '00' * 32);
       expect(j.containsKey('bpm'), isFalse);
     });
 
-    test('challenge.result never includes bpm', () {
+    test('challenge.result never includes bpm/seed', () {
       final m = ChallengeResultMessage(
         challengeId: 'c1',
         ok: true,
         bandMac: 'AA:BB:CC:DD:EE:FF',
+        presenceProof: 'aa' * 32,
+        seedDigest: 'bb' * 32,
+        pqcSha3: 'cc' * 32,
+        pqcKemFp: 'dd' * 32,
       );
       final j = m.toJson();
-      expect(j.keys.toSet().containsAll(['v', 'type', 'challengeId', 'ok', 'bandMac']), isTrue);
+      expect(
+        j.keys.toSet().containsAll(['v', 'type', 'challengeId', 'ok', 'bandMac']),
+        isTrue,
+      );
+      expect(j['presenceProof'], isNotNull);
       expect(j.containsKey('bpm'), isFalse);
       expect(j.containsKey('heartRate'), isFalse);
+      expect(j.containsKey('seed'), isFalse);
     });
 
     test('presence.update never includes bpm', () {

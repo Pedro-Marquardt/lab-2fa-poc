@@ -384,6 +384,14 @@ packages:
       url: "https://pub.dev"
     source: hosted
     version: "4.0.0"
+  pqcrypto:
+    dependency: "direct main"
+    description:
+      name: pqcrypto
+      sha256: ec5027887d3bfdcf0c383f805a813d7c518864e56e3e48028f5ed2980db7eb64
+      url: "https://pub.dev"
+    source: hosted
+    version: "0.4.3"
   sky_engine:
     dependency: transitive
     description: flutter

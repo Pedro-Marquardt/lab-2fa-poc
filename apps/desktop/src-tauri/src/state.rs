@@ -18,6 +18,10 @@ pub struct LabState {
     pub mobile_online: bool,
     /// True when mobile reports band ready via pair.register / presence.update.
     pub band_ready: bool,
+    /// Hex presence key from the current mobile pair session (for proof verify).
+    pub presence_key: Option<String>,
+    /// SHA3-256(ML-KEM pk) from pair — demo/audit only.
+    pub kem_pub_fp: Option<String>,
     pub lan_ip: Option<String>,
     pub config: AppConfig,
     /// Set when `BIOENTROPY_API_URL` yielded a lab pairing ticket.
@@ -37,6 +41,8 @@ impl LabState {
             pairing: persist::load_pairing(),
             mobile_online: false,
             band_ready: false,
+            presence_key: None,
+            kem_pub_fp: None,
             lan_ip: detect_lan_ip(),
             config: persist::load_config(),
             api_ticket_id: None,

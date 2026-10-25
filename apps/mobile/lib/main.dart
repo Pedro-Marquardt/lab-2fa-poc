@@ -7,12 +7,16 @@ import 'package:permission_handler/permission_handler.dart';
 
 import 'config/env.dart';
 import 'huami/miband.dart';
+import 'lab/bio_seed.dart';
 import 'lab/bpm_gate.dart';
 import 'lab/lab_ws_client.dart';
+import 'lab/pqc_demo.dart';
+import 'lab/presence_proof.dart';
 import 'lab/qr_payload.dart';
 import 'lab/ws_messages.dart';
 import 'permissions/ble_permissions.dart';
 import 'screens/qr_scan_screen.dart';
+import 'widgets/seed_matrix.dart';
 
 Future<void> main() async {
   WidgetsFlutterBinding.ensureInitialized();
@@ -26,7 +30,7 @@ class BioentropyApp extends StatelessWidget {
   @override
   Widget build(BuildContext context) {
     return MaterialApp(
-      title: 'Bioentropy',
+      title: 'Wearable 2FA · PQC',
       debugShowCheckedModeBanner: false,
       theme: ThemeData(
         colorScheme: ColorScheme.fromSeed(
@@ -53,11 +57,20 @@ class _HomePageState extends State<HomePage> {
   MiBandState _bandState = MiBandState.idle;
   LabWsStatus _labStatus = LabWsStatus.disconnected;
   int? _bpm;
-  final _logs = <String>[];
+  int? _steps;
+  int? _spo2;
   String? _error;
   String? _desktopName;
   ChallengeResultMessage? _lastChallengeResult;
   bool _challengeBusy = false;
+  bool _hashBusy = false;
+  List<List<int>>? _matrix;
+  String? _sha3Hex;
+  String? _mlKemFpHex;
+  String? _seedMeta;
+
+  final _bpmBuffer = <int>[];
+  static const _bpmBufferMax = 16;
 
   final _subs = <StreamSubscription<dynamic>>[];
 
@@ -72,26 +85,27 @@ class _HomePageState extends State<HomePage> {
       _pushPresence();
     }));
     _subs.add(_client.heartRate$.listen((bpm) {
-      // UI only — never log stream values or send over WS.
-      if (mounted) setState(() => _bpm = bpm);
+      if (!mounted) return;
+      setState(() => _bpm = bpm);
+      if (bpm != null && bpm >= 40 && bpm <= 200) {
+        _bpmBuffer.add(bpm);
+        while (_bpmBuffer.length > _bpmBufferMax) {
+          _bpmBuffer.removeAt(0);
+        }
+      }
     }));
-    _subs.add(_client.log$.listen(_pushLog));
+    _subs.add(_client.steps$.listen((steps) {
+      if (mounted) setState(() => _steps = steps);
+    }));
+    _subs.add(_client.log$.listen(debugPrint));
     _subs.add(_ws.status$.listen((s) {
       if (mounted) setState(() => _labStatus = s);
     }));
-    _subs.add(_ws.log$.listen(_pushLog));
+    _subs.add(_ws.log$.listen(debugPrint));
     _subs.add(_ws.challenge$.listen(_onChallenge));
     _subs.add(_ws.result$.listen((r) {
       if (mounted) setState(() => _lastChallengeResult = r);
     }));
-  }
-
-  void _pushLog(String m) {
-    if (!mounted) return;
-    setState(() {
-      _logs.insert(0, m);
-      if (_logs.length > 40) _logs.removeLast();
-    });
   }
 
   @override
@@ -104,24 +118,44 @@ class _HomePageState extends State<HomePage> {
     super.dispose();
   }
 
-  String get _bandMac {
-    return _client.bandMac ?? AppEnv.mac ?? '';
-  }
+  String get _bandMac => _client.bandMac ?? AppEnv.mac ?? '';
+
+  bool get _bandConnected =>
+      _bandState != MiBandState.idle && _bandState != MiBandState.error;
+
+  bool get _bandBusy =>
+      _bandState == MiBandState.scanning ||
+      _bandState == MiBandState.connecting ||
+      _bandState == MiBandState.authenticating;
+
+  bool get _paired =>
+      _labStatus == LabWsStatus.paired ||
+      _labStatus == LabWsStatus.challengeInProgress ||
+      _labStatus == LabWsStatus.result;
 
   String get _labStateLabel {
     final bandLive = _client.isStreamingHr;
     return switch (_labStatus) {
-      LabWsStatus.disconnected => 'Não sincronizado',
+      LabWsStatus.disconnected => 'Offline',
       LabWsStatus.connecting => 'A emparelhar…',
-      LabWsStatus.paired =>
-        bandLive ? 'Sincronizado' : 'Desktop ligado · band offline',
-      LabWsStatus.challengeInProgress => 'Challenge em curso…',
+      LabWsStatus.paired => bandLive ? 'Sync' : 'Sem band',
+      LabWsStatus.challengeInProgress => 'Challenge…',
       LabWsStatus.result => _lastChallengeResult?.ok == true
-          ? (bandLive ? 'Sincronizado · OK' : 'Result OK · band offline')
-          : 'Result: FAIL',
-      LabWsStatus.error => 'WS erro',
+          ? (bandLive ? 'OK' : 'OK · sem band')
+          : 'Falhou',
+      LabWsStatus.error => 'Erro WS',
     };
   }
+
+  String get _bandStateLabel => switch (_bandState) {
+        MiBandState.idle => 'Parado',
+        MiBandState.scanning => 'A procurar…',
+        MiBandState.connecting => 'A conectar…',
+        MiBandState.authenticating => 'A autenticar…',
+        MiBandState.authenticated => 'OK',
+        MiBandState.streamingHr => 'HR',
+        MiBandState.error => 'Erro',
+      };
 
   void _pushPresence() {
     if (!_ws.isSessionLive) return;
@@ -133,52 +167,129 @@ class _HomePageState extends State<HomePage> {
     );
   }
 
+  void _showPermSnackBar(String message) {
+    if (!mounted) return;
+    ScaffoldMessenger.of(context).showSnackBar(
+      SnackBar(
+        content: Text(message),
+        action: SnackBarAction(
+          label: 'Abrir definições',
+          onPressed: openAppSettings,
+        ),
+      ),
+    );
+  }
+
   Future<void> _connectBand() async {
     setState(() {
       _error = null;
       _bpm = null;
+      _steps = null;
+      _bpmBuffer.clear();
     });
     try {
-      if (mounted) {
-        await showDialog<void>(
-          context: context,
-          builder: (ctx) => AlertDialog(
-            title: const Text('Permissões Xiaomi'),
-            content: const Text(
-              'No Android 14 o popup NÃO se chama "Bluetooth".\n\n'
-              'Chama-se "Dispositivos próximos" / "Nearby devices".\n\n'
-              'Também liga o ícone de Localização (GPS) na barra de estado.\n\n'
-              'Se já tiveres dado permissão antes, pode não voltar a pedir.',
-            ),
-            actions: [
-              TextButton(
-                onPressed: () => Navigator.pop(ctx),
-                child: const Text('Continuar'),
-              ),
-            ],
-          ),
-        );
-      }
-
       final permError = await BlePermissions.ensure(
-        onLog: _pushLog,
+        onLog: debugPrint,
       );
       if (permError != null) {
-        throw StateError(permError);
+        _showPermSnackBar(permError);
+        setState(() => _error = permError);
+        return;
       }
 
       await _client.connect(preferredMac: AppEnv.mac);
+      if (mounted) {
+        setState(() {
+          _steps = _client.lastSteps;
+          _spo2 = _client.lastSpo2 ?? _spo2;
+        });
+      }
     } on PlatformException catch (e) {
-      setState(() {
-        _error =
-            'PlatformException [${e.code}]: ${e.message}\n${e.details ?? ""}';
-        _logs.insert(0, _error!);
-      });
+      final msg = 'PlatformException [${e.code}]: ${e.message}';
+      debugPrint('$msg\n${e.details ?? ""}');
+      if (mounted) setState(() => _error = msg);
     } catch (e) {
+      debugPrint(e.toString());
+      if (mounted) setState(() => _error = e.toString());
+    }
+  }
+
+  Future<void> _toggleBand() async {
+    if (_bandConnected) {
+      await _client.disconnect();
+      if (mounted) {
+        setState(() {
+          _bpm = null;
+          _steps = null;
+          // Keep last SpO₂ in UI/session cache for the PQC seed.
+          _bpmBuffer.clear();
+        });
+      }
+      return;
+    }
+    await _connectBand();
+  }
+
+  Future<void> _generateHash() async {
+    if (_hashBusy) return;
+    final mac = _bandMac;
+    if (mac.isEmpty) {
+      setState(() => _error = 'Sem MAC da band');
+      return;
+    }
+    final samples = List<int>.from(_bpmBuffer);
+    if (samples.isEmpty && _bpm != null) samples.add(_bpm!);
+    if (samples.isEmpty) {
+      setState(() => _error = 'Precisa de BPM ao vivo');
+      return;
+    }
+
+    setState(() {
+      _hashBusy = true;
+      _error = null;
+      _sha3Hex = null;
+      _mlKemFpHex = null;
+      _seedMeta = null;
+    });
+
+    try {
+      // Instant seed from live/cached band values — no on-demand SpO₂.
+      final spo2 = _client.lastSpo2 ?? _spo2;
+      final steps = _client.lastSteps ?? _steps;
+      final bio = deriveBioSeed(
+        BioSeedInput(
+          bpmSamples: samples,
+          bandMac: mac,
+          capturedAtMs: DateTime.now().millisecondsSinceEpoch,
+          spo2: spo2,
+          steps: steps,
+          distanceM: _client.lastDistanceM,
+          calories: _client.lastCalories,
+        ),
+      );
+      final pqc = runPqcDemo(bio.seed32);
+
+      if (!mounted) {
+        bio.wipe();
+        return;
+      }
       setState(() {
-        _error = e.toString();
-        _logs.insert(0, _error!);
+        _matrix = bio.matrix.map((r) => List<int>.from(r)).toList();
+        _sha3Hex = pqc.sha3Hex;
+        _mlKemFpHex = pqc.mlKemPubFpHex;
+        _spo2 = bio.usedSpo2;
+        _steps = bio.usedSteps;
+        _seedMeta =
+            'Seed: HR×${bio.usedBpm.length} · steps ${bio.usedSteps ?? "—"}'
+            '${bio.usedSpo2 != null ? " · SpO₂ ${bio.usedSpo2}" : ""}'
+            ' · on-device';
       });
+      bio.wipe();
+    } on Object catch (e) {
+      debugPrint('generateHash: $e');
+      if (mounted) setState(() => _error = e.toString());
+    } finally {
+      if (mounted) setState(() => _hashBusy = false);
     }
   }
 
@@ -214,21 +325,20 @@ class _HomePageState extends State<HomePage> {
       await _ws.connectAndRegister(qr: qr, bandMac: mac);
       _pushPresence();
     } on Object catch (e) {
-      setState(() {
-        _error = e.toString();
-        _logs.insert(0, _error!);
-      });
+      debugPrint(e.toString());
+      if (mounted) setState(() => _error = e.toString());
     }
   }
 
   Future<void> _onChallenge(ChallengeRequest req) async {
     if (_challengeBusy) {
-      _pushLog('challenge: BUSY — denying ${req.challengeId}');
+      debugPrint('challenge: BUSY — denying ${req.challengeId}');
       _ws.sendChallengeResult(
         ChallengeResultMessage(
           challengeId: req.challengeId,
           ok: false,
-          bandMac: _bandMac.isEmpty ? (AppEnv.mac ?? '00:00:00:00:00:00') : _bandMac,
+          bandMac:
+              _bandMac.isEmpty ? (AppEnv.mac ?? '00:00:00:00:00:00') : _bandMac,
           reason: 'busy',
         ),
       );
@@ -239,42 +349,92 @@ class _HomePageState extends State<HomePage> {
     try {
       String? reason;
       var ok = false;
+      String? presenceProof;
+      String? seedDigest;
+      String? pqcSha3;
+      String? pqcKemFp;
 
       try {
         await _ensureBandReady();
+        final session = _ws.session;
         if (mac.isEmpty) {
           reason = 'no_band_mac';
+        } else if (session == null) {
+          reason = 'no_pairing_session';
+          debugPrint('challenge: FAIL no_pairing_session');
         } else if (!_client.isStreamingHr) {
           reason = 'hr_not_streaming';
-          _pushLog('challenge: FAIL hr_not_streaming');
+          debugPrint('challenge: FAIL hr_not_streaming');
         } else {
-          // Presença: 3 amostras ao vivo, ≥2 BPM distintos, span ≥2s.
-          // Sem seed/cache. Logs BPM só no telemóvel.
-          _pushLog(
+          debugPrint(
             'challenge: waiting presence '
             '(fresh=${_client.hasFreshHr()} last=${_client.lastHeartRate ?? "-"})…',
           );
+          // Lab gate: one live in-range BPM is enough (fast presence).
           final valid = await waitValidBpm(
             heartRate$: _client.heartRate$,
-            minSamples: 3,
-            minDistinct: 2,
-            minSpan: const Duration(seconds: 2),
-            onEvent: _pushLog,
+            minSamples: 1,
+            minDistinct: 1,
+            minSpan: Duration.zero,
+            minSampleGap: Duration.zero,
+            timeout: const Duration(seconds: 8),
+            onEvent: debugPrint,
           );
           if (valid && _client.hasFreshHr()) {
-            ok = true;
-            _pushLog('challenge: presence OK');
+            final samples = List<int>.from(_bpmBuffer);
+            if (samples.isEmpty && _bpm != null) samples.add(_bpm!);
+            if (samples.isEmpty) {
+              reason = 'no_bpm_samples';
+            } else {
+              final bio = deriveBioSeed(
+                BioSeedInput(
+                  bpmSamples: samples,
+                  bandMac: mac,
+                  capturedAtMs: DateTime.now().millisecondsSinceEpoch,
+                  spo2: _client.lastSpo2 ?? _spo2,
+                  steps: _client.lastSteps ?? _steps,
+                  distanceM: _client.lastDistanceM,
+                  calories: _client.lastCalories,
+                ),
+              );
+              final pqc = runPqcDemo(bio.seed32);
+              seedDigest = seedDigestHex(bio.seed32);
+              presenceProof = computePresenceProof(
+                presenceKeyHex: session.presenceKeyHex,
+                challengeId: req.challengeId,
+                bandMac: mac,
+                seedDigestHex: seedDigest,
+              );
+              pqcSha3 = pqc.sha3Hex;
+              pqcKemFp = pqc.mlKemPubFpHex;
+              if (mounted) {
+                setState(() {
+                  _matrix =
+                      bio.matrix.map((r) => List<int>.from(r)).toList();
+                  _sha3Hex = pqc.sha3Hex;
+                  _mlKemFpHex = pqc.mlKemPubFpHex;
+                  _steps = bio.usedSteps;
+                  _spo2 = bio.usedSpo2;
+                  _seedMeta =
+                      'Unlock seed: HR×${bio.usedBpm.length} · steps ${bio.usedSteps ?? "—"}'
+                      ' · presence proof';
+                });
+              }
+              bio.wipe();
+              ok = true;
+              debugPrint('challenge: presence + PQC proof OK');
+            }
           } else if (valid && !_client.hasFreshHr()) {
             reason = 'hr_stale';
-            _pushLog('challenge: presence FAIL (hr_stale after samples)');
+            debugPrint('challenge: presence FAIL (hr_stale after samples)');
           } else {
             reason = 'no_valid_bpm';
-            _pushLog('challenge: presence FAIL (no_valid_bpm)');
+            debugPrint('challenge: presence FAIL (no_valid_bpm)');
           }
         }
       } on Object catch (e) {
         reason = 'band_error';
-        _pushLog('challenge band: $e');
+        debugPrint('challenge band: $e');
       }
 
       final result = ChallengeResultMessage(
@@ -282,9 +442,14 @@ class _HomePageState extends State<HomePage> {
         ok: ok,
         bandMac: mac.isEmpty ? (AppEnv.mac ?? '00:00:00:00:00:00') : mac,
         reason: ok ? null : reason,
+        presenceProof: ok ? presenceProof : null,
+        seedDigest: ok ? seedDigest : null,
+        pqcSha3: ok ? pqcSha3 : null,
+        pqcKemFp: ok ? pqcKemFp : null,
       );
-      _pushLog(
-        'challenge.result ok=$ok reason=${reason ?? "-"} (BPM not sent to desktop)',
+      debugPrint(
+        'challenge.result ok=$ok reason=${reason ?? "-"} '
+        'proof=${presenceProof != null} (BPM/seed not sent)',
       );
       _ws.sendChallengeResult(result);
     } finally {
@@ -300,142 +465,185 @@ class _HomePageState extends State<HomePage> {
     });
   }
 
-  Future<void> _openPermSettings() async {
-    await openAppSettings();
-  }
-
-  Future<void> _disconnectBand() => _client.disconnect();
-
-  String get _bandStateLabel => switch (_bandState) {
-        MiBandState.idle => 'Parado',
-        MiBandState.scanning => 'A procurar…',
-        MiBandState.connecting => 'A conectar…',
-        MiBandState.authenticating => 'A autenticar…',
-        MiBandState.authenticated => 'Autenticado',
-        MiBandState.streamingHr => 'HR ao vivo',
-        MiBandState.error => 'Erro',
-      };
-
   @override
   Widget build(BuildContext context) {
-    final busy = _bandState == MiBandState.scanning ||
-        _bandState == MiBandState.connecting ||
-        _bandState == MiBandState.authenticating;
-    final paired = _labStatus == LabWsStatus.paired ||
-        _labStatus == LabWsStatus.challengeInProgress ||
-        _labStatus == LabWsStatus.result;
+    final scheme = Theme.of(context).colorScheme;
 
     return Scaffold(
       appBar: AppBar(
-        title: const Text('Bioentropy · lab 2FA'),
+        title: const Text('Wearable 2FA'),
+        actions: [
+          Padding(
+            padding: const EdgeInsets.only(right: 12),
+            child: Center(
+              child: Text(
+                'PQC demo',
+                style: Theme.of(context).textTheme.labelLarge?.copyWith(
+                      color: scheme.primary,
+                    ),
+              ),
+            ),
+          ),
+        ],
       ),
-      body: Padding(
-        padding: const EdgeInsets.all(20),
-        child: Column(
-          crossAxisAlignment: CrossAxisAlignment.stretch,
-          children: [
-            Text(
-              'Key: ${AppEnv.authKeyMasked}',
-              style: Theme.of(context).textTheme.bodySmall,
-            ),
-            Text(
-              'MAC: ${_bandMac.isEmpty ? (AppEnv.mac ?? "—") : _bandMac}',
-              style: Theme.of(context).textTheme.bodySmall,
-            ),
-            const SizedBox(height: 12),
-            _StatusChip(
-              label: 'Band: $_bandStateLabel',
-              tone: _bandState == MiBandState.streamingHr
-                  ? _ChipTone.ok
-                  : _ChipTone.neutral,
-            ),
-            const SizedBox(height: 6),
-            _StatusChip(
-              label: 'Lab: $_labStateLabel'
-                  '${_desktopName != null ? " · $_desktopName" : ""}',
-              tone: switch (_labStatus) {
-                LabWsStatus.paired =>
-                  _client.isStreamingHr ? _ChipTone.ok : _ChipTone.warn,
-                LabWsStatus.challengeInProgress => _ChipTone.warn,
-                LabWsStatus.result => _lastChallengeResult?.ok != true
-                    ? _ChipTone.err
-                    : (_client.isStreamingHr ? _ChipTone.ok : _ChipTone.warn),
-                LabWsStatus.error => _ChipTone.err,
-                _ => _ChipTone.neutral,
-              },
-            ),
-            if (_lastChallengeResult != null &&
-                _labStatus == LabWsStatus.result) ...[
-              const SizedBox(height: 6),
+      body: SafeArea(
+        child: Padding(
+          padding: const EdgeInsets.fromLTRB(20, 12, 20, 20),
+          child: Column(
+            crossAxisAlignment: CrossAxisAlignment.stretch,
+            children: [
               Text(
-                _lastChallengeResult!.ok
-                    ? 'Último challenge: aceite'
-                    : 'Último challenge: rejeitado'
-                        '${_lastChallengeResult!.reason != null ? " (${_lastChallengeResult!.reason})" : ""}',
-                style: Theme.of(context).textTheme.bodySmall,
+                'Mi Band → local seed → SHA3 + ML-KEM',
+                style: Theme.of(context).textTheme.titleSmall?.copyWith(
+                      color: scheme.onSurfaceVariant,
+                    ),
               ),
-            ],
-            const SizedBox(height: 12),
-            Container(
-              padding: const EdgeInsets.symmetric(vertical: 28),
-              decoration: BoxDecoration(
-                borderRadius: BorderRadius.circular(16),
-                color: Theme.of(context).colorScheme.surfaceContainerHighest,
-              ),
-              child: Column(
+              const SizedBox(height: 12),
+              Row(
+                crossAxisAlignment: CrossAxisAlignment.start,
                 children: [
-                  Text(
-                    _bpm?.toString() ?? '—',
-                    style: Theme.of(context).textTheme.displayLarge,
+                  Expanded(
+                    child: Container(
+                      padding: const EdgeInsets.symmetric(vertical: 20),
+                      decoration: BoxDecoration(
+                        borderRadius: BorderRadius.circular(16),
+                        color: scheme.surfaceContainerHighest,
+                      ),
+                      child: Column(
+                        children: [
+                          Text(
+                            _bpm?.toString() ?? '—',
+                            style: Theme.of(context).textTheme.displayMedium,
+                          ),
+                          Text(
+                            'Heart rate',
+                            style: Theme.of(context)
+                                .textTheme
+                                .labelLarge
+                                ?.copyWith(color: scheme.onSurfaceVariant),
+                          ),
+                          const SizedBox(height: 8),
+                          Text(
+                            'Steps ${_steps?.toString() ?? "—"}'
+                            '${_spo2 != null ? " · SpO₂ $_spo2" : ""}',
+                            style: Theme.of(context)
+                                .textTheme
+                                .labelMedium
+                                ?.copyWith(color: scheme.onSurfaceVariant),
+                          ),
+                        ],
+                      ),
+                    ),
                   ),
-                  const Text('BPM (local only)'),
+                  const SizedBox(width: 12),
+                  Column(
+                    children: [
+                      SeedMatrix(matrix: _matrix),
+                      const SizedBox(height: 6),
+                      Text(
+                        'Seed matrix',
+                        style: Theme.of(context).textTheme.labelSmall?.copyWith(
+                              color: scheme.onSurfaceVariant,
+                            ),
+                      ),
+                    ],
+                  ),
                 ],
               ),
-            ),
-            const SizedBox(height: 16),
-            if (_error != null)
-              Text(
-                _error!,
-                style: TextStyle(color: Theme.of(context).colorScheme.error),
+              const SizedBox(height: 12),
+              Wrap(
+                spacing: 8,
+                runSpacing: 8,
+                children: [
+                  _StatusChip(
+                    label: 'Band · $_bandStateLabel',
+                    tone: _bandState == MiBandState.streamingHr
+                        ? _ChipTone.ok
+                        : _ChipTone.neutral,
+                  ),
+                  _StatusChip(
+                    label: _desktopName != null
+                        ? 'Desktop · $_labStateLabel · $_desktopName'
+                        : 'Desktop · $_labStateLabel',
+                    tone: switch (_labStatus) {
+                      LabWsStatus.paired =>
+                        _client.isStreamingHr ? _ChipTone.ok : _ChipTone.warn,
+                      LabWsStatus.challengeInProgress => _ChipTone.warn,
+                      LabWsStatus.result => _lastChallengeResult?.ok != true
+                          ? _ChipTone.err
+                          : (_client.isStreamingHr
+                              ? _ChipTone.ok
+                              : _ChipTone.warn),
+                      LabWsStatus.error => _ChipTone.err,
+                      _ => _ChipTone.neutral,
+                    },
+                  ),
+                ],
               ),
-            const SizedBox(height: 8),
-            FilledButton(
-              onPressed: busy ? null : _connectBand,
-              child: const Text('Conectar Mi Band'),
-            ),
-            const SizedBox(height: 8),
-            FilledButton.tonal(
-              onPressed: _labStatus == LabWsStatus.connecting ? null : _scanAndPair,
-              child: Text(paired ? 'Re-scan QR / re-pair' : 'Scan QR desktop'),
-            ),
-            const SizedBox(height: 8),
-            OutlinedButton(
-              onPressed: paired ? _unpair : null,
-              child: const Text('Unpair desktop'),
-            ),
-            const SizedBox(height: 8),
-            OutlinedButton(
-              onPressed: _bandState == MiBandState.idle ? null : _disconnectBand,
-              child: const Text('Desconectar band'),
-            ),
-            const SizedBox(height: 8),
-            TextButton(
-              onPressed: _openPermSettings,
-              child: const Text('Abrir permissões do app'),
-            ),
-            const SizedBox(height: 16),
-            Text('Log', style: Theme.of(context).textTheme.titleSmall),
-            const SizedBox(height: 8),
-            Expanded(
-              child: ListView.builder(
-                itemCount: _logs.length,
-                itemBuilder: (_, i) => Text(
-                  _logs[i],
-                  style: const TextStyle(fontFamily: 'monospace', fontSize: 12),
+              if (_seedMeta != null) ...[
+                const SizedBox(height: 12),
+                Text(
+                  _seedMeta!,
+                  style: Theme.of(context).textTheme.bodySmall?.copyWith(
+                        color: scheme.onSurfaceVariant,
+                      ),
+                ),
+              ],
+              if (_sha3Hex != null) ...[
+                const SizedBox(height: 8),
+                SelectableText(
+                  'SHA3-256  ${_sha3Hex!.substring(0, 20)}…',
+                  style: Theme.of(context).textTheme.bodySmall,
+                ),
+                SelectableText(
+                  'ML-KEM-512  ${_mlKemFpHex!.substring(0, 20)}…',
+                  style: Theme.of(context).textTheme.bodySmall,
+                ),
+              ],
+              const Spacer(),
+              if (_error != null) ...[
+                Text(
+                  _error!,
+                  maxLines: 3,
+                  overflow: TextOverflow.ellipsis,
+                  style: TextStyle(color: scheme.error),
+                ),
+                const SizedBox(height: 12),
+              ],
+              FilledButton(
+                onPressed: (_hashBusy ||
+                        !_client.isStreamingHr ||
+                        _bpmBuffer.isEmpty && _bpm == null)
+                    ? null
+                    : _generateHash,
+                child: Text(
+                  _hashBusy ? 'Generating…' : 'Generate PQC hash',
                 ),
               ),
-            ),
-          ],
+              const SizedBox(height: 8),
+              FilledButton.tonal(
+                onPressed: _bandBusy ? null : _toggleBand,
+                child: Text(
+                  _bandConnected ? 'Disconnect band' : 'Connect Mi Band',
+                ),
+              ),
+              const SizedBox(height: 8),
+              OutlinedButton(
+                onPressed:
+                    _labStatus == LabWsStatus.connecting ? null : _scanAndPair,
+                child: Text(
+                  _paired ? 'Re-pair desktop' : 'Pair with desktop',
+                ),
+              ),
+              if (_paired) ...[
+                const SizedBox(height: 8),
+                TextButton(
+                  onPressed: _unpair,
+                  child: const Text('Unpair'),
+                ),
+              ],
+            ],
+          ),
         ),
       ),
     );
@@ -465,7 +673,7 @@ class _StatusChip extends StatelessWidget {
         color: bg,
         borderRadius: BorderRadius.circular(8),
       ),
-      child: Text(label),
+      child: Text(label, style: Theme.of(context).textTheme.labelLarge),
     );
   }
 }

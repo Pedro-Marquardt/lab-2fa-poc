@@ -88,6 +88,24 @@ pub struct MobileMessage {
     /// `presence.update` — band HR streaming / ready (no BPM values).
     #[serde(default)]
     pub band_ready: Option<bool>,
+    /// `pair.register` — hex session key for unlock proof verification.
+    #[serde(default)]
+    pub presence_key: Option<String>,
+    /// `pair.register` — SHA3-256(ML-KEM pk) audit fingerprint.
+    #[serde(default)]
+    pub kem_pub_fp: Option<String>,
+    /// `challenge.result` — SHA3 presence proof.
+    #[serde(default)]
+    pub presence_proof: Option<String>,
+    /// `challenge.result` — SHA3(bio seed), not the seed.
+    #[serde(default)]
+    pub seed_digest: Option<String>,
+    /// `challenge.result` — SHA3-256(seed) audit.
+    #[serde(default)]
+    pub pqc_sha3: Option<String>,
+    /// `challenge.result` — ML-KEM pubkey fingerprint audit.
+    #[serde(default)]
+    pub pqc_kem_fp: Option<String>,
 }
 
 #[derive(Debug, Serialize)]
@@ -107,6 +125,10 @@ pub struct ChallengeOutcome {
     pub ok: bool,
     pub band_mac: Option<String>,
     pub reason: Option<String>,
+    pub presence_proof: Option<String>,
+    pub seed_digest: Option<String>,
+    pub pqc_sha3: Option<String>,
+    pub pqc_kem_fp: Option<String>,
 }
 
 #[derive(Debug, Serialize)]

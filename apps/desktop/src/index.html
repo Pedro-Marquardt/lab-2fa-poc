@@ -33,13 +33,7 @@
       <div class="pair-grid">
         <div class="qr-box" id="qr-box" aria-label="Pairing QR code"></div>
         <div class="meta">
-          <h2>Scan from phone</h2>
-          <p class="muted">
-            O QR só inicia o pareamento — <strong>não</strong> significa
-            sincronizado. Sincronizado = celular com sessão WS + pulseira a
-            transmitir HR. Com <code>BIOENTROPY_API_URL</code>, o QR inclui
-            ticket de API; biometria nunca sai do telemóvel.
-          </p>
+          <h2>Emparelhar com o telemóvel</h2>
           <dl class="kv">
             <dt>WebSocket</dt>
             <dd id="ws-url">—</dd>
@@ -65,14 +59,35 @@
     </section>
 
     <section id="panel-config" class="panel" role="tabpanel" hidden>
-      <h2>Gated apps</h2>
-      <p class="muted">
-        O switch <strong>2FA</strong> grava na hora. Ligado: Open só com
-        sync (celular + pulseira) e manda <code>challenge.request</code>.
-        Desligado: abre sem challenge.
-      </p>
+      <div class="apps-header">
+        <h2>Apps</h2>
+        <button type="button" id="btn-add-apps" class="primary">Add apps</button>
+      </div>
+      <p class="apps-hint">Apps gated by Lab 2FA. Toggle 2FA per app, or remove from the list.</p>
       <div id="apps-list" class="apps-list"></div>
       <p id="launch-msg" class="launch-msg" aria-live="polite"></p>
     </section>
+
+    <dialog id="add-apps-dialog" class="add-apps-dialog">
+      <form method="dialog" id="add-apps-form">
+        <header class="add-apps-header">
+          <h2>Add installed apps</h2>
+          <button type="submit" value="cancel" class="ghost" aria-label="Close">×</button>
+        </header>
+        <input
+          type="search"
+          id="add-apps-search"
+          placeholder="Search apps…"
+          autocomplete="off"
+        />
+        <div id="add-apps-list" class="add-apps-list" role="listbox" aria-multiselectable="true"></div>
+        <footer class="add-apps-footer">
+          <button type="submit" value="cancel">Cancel</button>
+          <button type="submit" value="apply" class="primary" id="btn-apply-apps">
+            Apply
+          </button>
+        </footer>
+      </form>
+    </dialog>
   </body>
 </html>

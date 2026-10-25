@@ -6,8 +6,16 @@ const $ = (sel) => document.querySelector(sel);
 /** @type {{ pairing?: unknown, mobileOnline?: boolean, bandReady?: boolean, synced?: boolean }} */
 let labStatus = { pairing: null, mobileOnline: false, bandReady: false, synced: false };
 
+/** @type {{ apps: Array<Record<string, unknown>> }} */
+let currentConfig = { apps: [] };
+
+/** @type {Array<{ id: string, label: string, command: string[], desktopFile?: string }>} */
+let installedCatalog = [];
+
+/** @type {Set<string>} */
+let pickerSelected = new Set();
+
 function appRequires2fa(app) {
-  // Tolerate older serialized keys from Rust camelCase quirks.
   return Boolean(app.require2fa ?? app.require2Fa ?? app.require_2fa);
 }
 
@@ -95,8 +103,18 @@ async function refreshStatus() {
 }
 
 function renderApps(config) {
+  currentConfig = config;
   const list = $("#apps-list");
   list.innerHTML = "";
+
+  if (!config.apps.length) {
+    const empty = document.createElement("p");
+    empty.className = "apps-empty";
+    empty.textContent = "No apps yet — click Add apps to pick from your system.";
+    list.appendChild(empty);
+    updateOpenButtons();
+    return;
+  }
 
   for (const app of config.apps) {
     const card = document.createElement("article");
@@ -110,14 +128,11 @@ function renderApps(config) {
     title.textContent = app.label;
     meta.appendChild(title);
 
-    const pathInput = document.createElement("input");
-    pathInput.className = "app-path";
-    pathInput.value = (app.command || []).join(" ");
-    pathInput.placeholder = app.curated
-      ? "resolved command"
-      : "/absolute/path/to/binary [args...]";
-    pathInput.dataset.field = "command";
-    meta.appendChild(pathInput);
+    const cmd = document.createElement("p");
+    cmd.className = "app-cmd";
+    cmd.textContent = (app.command || []).join(" ");
+    cmd.title = cmd.textContent;
+    meta.appendChild(cmd);
 
     const toggleRow = document.createElement("div");
     toggleRow.className = "toggle-row";
@@ -144,26 +159,24 @@ function renderApps(config) {
     const actions = document.createElement("div");
     actions.className = "app-actions";
 
-    const saveBtn = document.createElement("button");
-    saveBtn.type = "button";
-    saveBtn.textContent = "Save";
-    saveBtn.addEventListener("click", () => saveAppFromCard(card, app));
-
     const openBtn = document.createElement("button");
     openBtn.type = "button";
     openBtn.className = "primary";
     openBtn.textContent = "Open";
     openBtn.addEventListener("click", () => openApp(card, app));
 
-    // Persist immediately — Open / supervisor / gate wrapper read saved config.
+    const removeBtn = document.createElement("button");
+    removeBtn.type = "button";
+    removeBtn.className = "danger";
+    removeBtn.textContent = "Remove";
+    removeBtn.addEventListener("click", () => removeApp(app.id));
+
     toggle.addEventListener("change", async () => {
       updateOpenButtons();
       try {
-        await saveAppFromCard(card, app, { quiet: true });
+        await saveAppToggle(app.id, toggle.checked);
         setLaunchMsg(
-          toggle.checked
-            ? "2FA ligado — gravado."
-            : "2FA desligado — gravado.",
+          toggle.checked ? "2FA ligado — gravado." : "2FA desligado — gravado.",
           true,
         );
       } catch (err) {
@@ -171,8 +184,8 @@ function renderApps(config) {
       }
     });
 
-    actions.appendChild(saveBtn);
     actions.appendChild(openBtn);
+    actions.appendChild(removeBtn);
 
     card.appendChild(meta);
     card.appendChild(actions);
@@ -186,46 +199,33 @@ async function loadConfig() {
   renderApps(config);
 }
 
-function parseCommand(raw) {
-  const trimmed = raw.trim();
-  if (!trimmed) return [""];
-  return trimmed.match(/(?:[^\s"]+|"[^"]*")+/g)?.map((p) => p.replace(/^"|"$/g, "")) || [trimmed];
+async function saveAppToggle(appId, require2fa) {
+  const next = {
+    apps: currentConfig.apps.map((a) =>
+      a.id === appId ? { ...a, require2fa } : a,
+    ),
+  };
+  const saved = await invoke("save_config", { config: next });
+  currentConfig = saved;
+  updateOpenButtons();
+  return saved;
 }
 
-async function saveAppFromCard(card, original, opts = {}) {
-  const config = await invoke("get_config");
-  const pathInput = card.querySelector('[data-field="command"]');
-  const toggle = card.querySelector('[data-field="require2fa"]');
-  const next = config.apps.map((a) => {
-    if (a.id !== original.id) return a;
-    return {
-      ...a,
-      command: parseCommand(pathInput.value),
-      require2fa: toggle.checked,
-    };
-  });
-  const saved = await invoke("save_config", { config: { apps: next } });
-  if (!opts.quiet) {
-    renderApps(saved);
-    setLaunchMsg("Saved.", true);
-  } else {
-    // Keep focus/toggle; only refresh other cards' derived state from disk keys.
-    const updated = saved.apps.find((a) => a.id === original.id);
-    if (updated) {
-      toggle.checked = appRequires2fa(updated);
-    }
-    updateOpenButtons();
-  }
-  return saved;
+async function removeApp(appId) {
+  const next = {
+    apps: currentConfig.apps.filter((a) => a.id !== appId),
+  };
+  const saved = await invoke("save_config", { config: next });
+  renderApps(saved);
+  setLaunchMsg("App removed.", true);
 }
 
 async function openApp(card, original) {
   const toggle = card.querySelector('[data-field="require2fa"]');
   const require2fa = Boolean(toggle?.checked);
 
-  // Ensure backend matches the checkbox before open (avoids stale require2fa=true).
   try {
-    await saveAppFromCard(card, original, { quiet: true });
+    await saveAppToggle(original.id, require2fa);
   } catch (err) {
     setLaunchMsg(String(err), false);
     return;
@@ -253,6 +253,114 @@ function setLaunchMsg(text, ok) {
   if (ok === false) el.classList.add("err");
 }
 
+function renderPickerList(filter = "") {
+  const root = $("#add-apps-list");
+  root.innerHTML = "";
+  const q = filter.trim().toLowerCase();
+  const items = installedCatalog.filter((app) => {
+    if (!q) return true;
+    const hay = `${app.label} ${app.id} ${(app.command || []).join(" ")}`.toLowerCase();
+    return hay.includes(q);
+  });
+
+  if (!items.length) {
+    const empty = document.createElement("p");
+    empty.className = "apps-empty";
+    empty.textContent = installedCatalog.length
+      ? "No matches."
+      : "No installed apps found.";
+    root.appendChild(empty);
+    return;
+  }
+
+  for (const app of items) {
+    const row = document.createElement("label");
+    row.className = "add-apps-row";
+
+    const cb = document.createElement("input");
+    cb.type = "checkbox";
+    cb.checked = pickerSelected.has(app.id);
+    cb.addEventListener("change", () => {
+      if (cb.checked) pickerSelected.add(app.id);
+      else pickerSelected.delete(app.id);
+    });
+
+    const text = document.createElement("div");
+    const label = document.createElement("span");
+    label.className = "label";
+    label.textContent = app.label;
+    const cmd = document.createElement("span");
+    cmd.className = "cmd";
+    cmd.textContent = (app.command || []).join(" ");
+    cmd.title = cmd.textContent;
+    text.appendChild(label);
+    text.appendChild(cmd);
+
+    row.appendChild(cb);
+    row.appendChild(text);
+    root.appendChild(row);
+  }
+}
+
+async function openAddAppsDialog() {
+  const dialog = $("#add-apps-dialog");
+  const search = $("#add-apps-search");
+  setLaunchMsg("Loading installed apps…", null);
+  try {
+    installedCatalog = await invoke("list_installed_apps");
+    pickerSelected = new Set(currentConfig.apps.map((a) => a.id));
+    search.value = "";
+    renderPickerList("");
+    setLaunchMsg("", null);
+    dialog.showModal();
+    search.focus();
+  } catch (err) {
+    setLaunchMsg(String(err), false);
+  }
+}
+
+async function applyPickerSelection() {
+  const byId = new Map(installedCatalog.map((a) => [a.id, a]));
+  const existing = new Map(currentConfig.apps.map((a) => [a.id, a]));
+  const nextApps = [];
+
+  for (const id of pickerSelected) {
+    const prev = existing.get(id);
+    const catalog = byId.get(id);
+    if (prev) {
+      nextApps.push({
+        ...prev,
+        // Refresh command/label from desktop file when available.
+        label: catalog?.label ?? prev.label,
+        command: catalog?.command ?? prev.command,
+      });
+      continue;
+    }
+    if (!catalog) continue;
+    nextApps.push({
+      id: catalog.id,
+      label: catalog.label,
+      command: catalog.command,
+      require2fa: true,
+      curated: false,
+    });
+  }
+
+  // Keep a stable-ish order: previously listed first, then new by label.
+  nextApps.sort((a, b) => {
+    const ai = currentConfig.apps.findIndex((x) => x.id === a.id);
+    const bi = currentConfig.apps.findIndex((x) => x.id === b.id);
+    if (ai >= 0 && bi >= 0) return ai - bi;
+    if (ai >= 0) return -1;
+    if (bi >= 0) return 1;
+    return String(a.label).localeCompare(String(b.label));
+  });
+
+  const saved = await invoke("save_config", { config: { apps: nextApps } });
+  renderApps(saved);
+  setLaunchMsg(`Saved ${saved.apps.length} app(s).`, true);
+}
+
 window.addEventListener("DOMContentLoaded", async () => {
   document.querySelectorAll(".tab").forEach((btn) => {
     btn.addEventListener("click", () => setTab(btn.dataset.tab));
@@ -265,6 +373,24 @@ window.addEventListener("DOMContentLoaded", async () => {
   $("#btn-unpair").addEventListener("click", async () => {
     const status = await invoke("unpair");
     renderStatus(status);
+  });
+
+  $("#btn-add-apps").addEventListener("click", () => openAddAppsDialog());
+  $("#add-apps-search").addEventListener("input", (e) => {
+    renderPickerList(e.target.value);
+  });
+  $("#add-apps-form").addEventListener("submit", async (e) => {
+    const submitter = e.submitter;
+    const value = submitter?.value || "cancel";
+    if (value === "apply") {
+      e.preventDefault();
+      try {
+        await applyPickerSelection();
+        $("#add-apps-dialog").close();
+      } catch (err) {
+        setLaunchMsg(String(err), false);
+      }
+    }
   });
 
   await refreshStatus();

@@ -1,7 +1,7 @@
 # Lab host ↔ mobile message examples (frozen)
 
 Frozen JSON shapes for Bioentropy lab 2FA (host / mobile / API metadata).  
-**Never** include physiological fields (`bpm`, `hr`, `spo2`, ADC, waveforms, seeds).
+**Never** include physiological fields (`bpm`, `hr`, `spo2`, ADC, waveforms) or raw seeds.
 
 Version field `v` is `1` for this lab slice.
 
@@ -42,13 +42,17 @@ Host/mobile completes pairing over WebSocket. When `apiTicketId` was present, mo
 
 Desktop marks **sincronizado** only after this message on the **current** WS session (persisted MAC alone is not enough) plus live band presence.
 
+At pair the phone also runs **ML-KEM-512 keygen**, derives a local `presenceKey` (SHA3 of secret material), and sends it over the paired LAN channel so the desktop can **verify** unlock proofs. `kemPubFp` is audit/display only.
+
 ```json
 {
   "v": 1,
   "type": "pair.register",
   "pairingNonce": "...",
   "bandMac": "AA:BB:CC:DD:EE:FF",
-  "deviceLabel": "phone"
+  "deviceLabel": "phone",
+  "presenceKey": "<64 hex chars = 32 bytes>",
+  "kemPubFp": "<64 hex chars SHA3-256(ML-KEM pk)>"
 }
 ```
 
@@ -67,7 +71,7 @@ Mobile → desktop whenever band readiness changes. No BPM values. Desktop clear
 
 ## Challenge request
 
-Issued by the lab desktop (or relayed from API metadata) when opening a gated app.
+Issued by the lab desktop when opening a gated app (unlock).
 
 ```json
 {
@@ -82,7 +86,12 @@ Issued by the lab desktop (or relayed from API metadata) when opening a gated ap
 
 ## Challenge result
 
-Audit outcome only — success flag + band MAC. No physio. BPM is validated **on the phone** before this is sent.
+On success the phone must have live band presence, derive an on-device bio seed (HR + steps + …), run the PQC demo pipeline, and return a **verifiable** presence proof:
+
+`presenceProof = SHA3-256(presenceKey ‖ challengeId ‖ 0x00 ‖ bandMac ‖ 0x00 ‖ seedDigest)`
+
+`seedDigest = SHA3-256(bioSeed)` — digest only, never the seed.  
+`pqcSha3` / `pqcKemFp` are audit fields from the same on-device pipeline (SHA3-256(seed) and ML-KEM pubkey fingerprint).
 
 ```json
 {
@@ -91,9 +100,15 @@ Audit outcome only — success flag + band MAC. No physio. BPM is validated **on
   "challengeId": "<uuid>",
   "ok": true,
   "bandMac": "AA:BB:CC:DD:EE:FF",
-  "reason": null
+  "reason": null,
+  "presenceProof": "<64 hex>",
+  "seedDigest": "<64 hex>",
+  "pqcSha3": "<64 hex>",
+  "pqcKemFp": "<64 hex>"
 }
 ```
+
+Desktop rejects unlock if `ok` is true but proof/digest/PQC fields are missing or `presenceProof` does not match the recomputed value.
 
 ## API mapping (lab)
 

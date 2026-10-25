@@ -54,6 +54,8 @@ async fn handle_connection(
         guard.mobile_tx = Some(tx);
         guard.mobile_online = false;
         guard.band_ready = false;
+        guard.presence_key = None;
+        guard.kem_pub_fp = None;
         let _ = emit_status(&app, &guard);
     }
 
@@ -93,6 +95,8 @@ async fn handle_connection(
         let mut guard = state.lock().await;
         guard.mobile_online = false;
         guard.band_ready = false;
+        guard.presence_key = None;
+        guard.kem_pub_fp = None;
         guard.mobile_tx = None;
         // Fail any in-flight challenges on disconnect.
         let pending = std::mem::take(&mut guard.pending_challenges);
@@ -101,6 +105,10 @@ async fn handle_connection(
                 ok: false,
                 band_mac: None,
                 reason: Some("mobile_disconnected".into()),
+                presence_proof: None,
+                seed_digest: None,
+                pqc_sha3: None,
+                pqc_kem_fp: None,
             });
         }
         let _ = emit_status(&app, &guard);
@@ -133,6 +141,14 @@ async fn on_mobile_message(
                 return Err("pairingNonce mismatch".into());
             }
 
+            let presence_key = msg
+                .presence_key
+                .filter(|s| !s.is_empty())
+                .ok_or_else(|| "missing presenceKey".to_string())?;
+            if hex::decode(&presence_key).map(|b| b.len()).unwrap_or(0) != 32 {
+                return Err("presenceKey must be 32 bytes hex".into());
+            }
+
             let record = PairingRecord {
                 band_mac,
                 paired_at: chrono::Utc::now(),
@@ -140,9 +156,17 @@ async fn on_mobile_message(
             };
             persist::save_pairing(&record)?;
             guard.pairing = Some(record);
+            guard.presence_key = Some(presence_key);
+            guard.kem_pub_fp = msg.kem_pub_fp.filter(|s| !s.is_empty());
             guard.mobile_online = true;
             // Pair only happens after mobile ensured HR streaming — mark ready.
             guard.band_ready = true;
+            if let Some(fp) = guard.kem_pub_fp.as_ref() {
+                eprintln!(
+                    "[lab-ws] pair.register ok kemPubFp={}…",
+                    fp.chars().take(16).collect::<String>()
+                );
+            }
             emit_status(app, &guard)?;
             Ok(())
         }
@@ -177,6 +201,10 @@ async fn on_mobile_message(
                     ok: msg.ok.unwrap_or(false),
                     band_mac: msg.band_mac,
                     reason: msg.reason,
+                    presence_proof: msg.presence_proof,
+                    seed_digest: msg.seed_digest,
+                    pqc_sha3: msg.pqc_sha3,
+                    pqc_kem_fp: msg.pqc_kem_fp,
                 });
             }
             Ok(())

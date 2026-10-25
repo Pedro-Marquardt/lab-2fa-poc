@@ -31,16 +31,19 @@ class MiBandClient {
   final _decoder = Huami2021ChunkedDecoder();
   StreamSubscription<List<int>>? _chunkedSub;
   StreamSubscription<List<int>>? _hrSub;
+  StreamSubscription<List<int>>? _stepsSub;
   Timer? _hrPing;
 
   final _stateCtrl = StreamController<MiBandState>.broadcast();
   final _hrCtrl = StreamController<int?>.broadcast();
+  final _stepsCtrl = StreamController<int>.broadcast();
   final _logCtrl = StreamController<String>.broadcast();
 
   Stream<MiBandState> get state$ => _stateCtrl.stream;
 
   /// BPM ao vivo; `null` = amostra inválida / off-wrist / limpeza (não usar cache).
   Stream<int?> get heartRate$ => _hrCtrl.stream;
+  Stream<int> get steps$ => _stepsCtrl.stream;
   Stream<String> get log$ => _logCtrl.stream;
 
   MiBandState _state = MiBandState.idle;
@@ -60,6 +63,16 @@ class MiBandClient {
 
   /// Momento da última amostra HR válida (para freshness / off-wrist).
   DateTime? lastHrAt;
+
+  /// Passos do dia (realtime Huami). Só UI / seed local.
+  int? lastSteps;
+  int? lastDistanceM;
+  int? lastCalories;
+  DateTime? lastStepsAt;
+
+  /// Último SpO₂ conhecido na sessão (cache local; sem medição sob demanda).
+  int? lastSpo2;
+  DateTime? lastSpo2At;
 
   Timer? _hrIdleWatch;
 
@@ -249,6 +262,8 @@ class MiBandClient {
     BluetoothCharacteristic? chunkedRead;
     BluetoothCharacteristic? hrControl;
     BluetoothCharacteristic? hrMeasure;
+    BluetoothCharacteristic? stepsChar;
+    BluetoothCharacteristic? batteryChar;
 
     for (final s in services) {
       for (final c in s.characteristics) {
@@ -256,12 +271,14 @@ class MiBandClient {
         final p = c.properties;
         _log(
           'GATT $u write=${p.write} wrNoRsp=${p.writeWithoutResponse} '
-          'notify=${p.notify}',
+          'notify=${p.notify} read=${p.read}',
         );
         if (u == HuamiUuids.chunkedWrite) chunkedWrite = c;
         if (u == HuamiUuids.chunkedRead) chunkedRead = c;
         if (u == HuamiUuids.hrControl) hrControl = c;
         if (u == HuamiUuids.hrMeasure) hrMeasure = c;
+        if (u == HuamiUuids.realtimeSteps) stepsChar = c;
+        if (u == HuamiUuids.batteryLevel) batteryChar = c;
         if (chunkedWrite == null &&
             u.str128.toLowerCase().contains('00000016-0000-3512') &&
             (p.writeWithoutResponse || p.write)) {
@@ -271,6 +288,10 @@ class MiBandClient {
             u.str128.toLowerCase().contains('00000017-0000-3512') &&
             p.notify) {
           chunkedRead = c;
+        }
+        if (stepsChar == null &&
+            u.str128.toLowerCase().contains('00000007-0000-3512')) {
+          stepsChar = c;
         }
       }
     }
@@ -315,6 +336,23 @@ class MiBandClient {
 
     _setState(MiBandState.authenticated);
     _log('Autenticado ✓');
+
+    if (stepsChar != null) {
+      await _startSteps(stepsChar);
+    } else {
+      _log('Realtime steps char não encontrada');
+    }
+
+    if (batteryChar != null) {
+      try {
+        final raw = await batteryChar.read();
+        if (raw.isNotEmpty) {
+          _log('Battery ${raw[0]}%');
+        }
+      } catch (e) {
+        _log('Battery read falhou: $e');
+      }
+    }
 
     if (hrControl != null && hrMeasure != null) {
       await _startHr(hrControl, hrMeasure);
@@ -432,6 +470,58 @@ class MiBandClient {
     }
   }
 
+  Future<void> _startSteps(BluetoothCharacteristic stepsChar) async {
+    _log('A subscrever realtime steps…');
+    try {
+      if (stepsChar.properties.notify) {
+        await stepsChar.setNotifyValue(true);
+        _stepsSub = stepsChar.onValueReceived.listen(_onStepsPayload);
+      }
+      if (stepsChar.properties.read) {
+        final raw = await stepsChar.read();
+        _onStepsPayload(raw);
+      }
+    } catch (e) {
+      _log('Steps setup falhou: $e');
+    }
+  }
+
+  void _onStepsPayload(List<int> data) {
+    if (data.length < 3) return;
+    // Common Huami layout: [?, steps_lo, steps_hi, ...] with LE u16 steps.
+    final steps = data[1] | (data[2] << 8);
+    int? meters;
+    int? calories;
+    if (data.length >= 7) {
+      meters = data[5] | (data[6] << 8);
+    }
+    if (data.length >= 10) {
+      calories = data[9];
+    } else if (data.length >= 9) {
+      calories = data[7] | (data[8] << 8);
+    }
+    lastSteps = steps;
+    lastDistanceM = meters;
+    lastCalories = calories;
+    lastStepsAt = DateTime.now();
+    if (!_stepsCtrl.isClosed) {
+      _stepsCtrl.add(steps);
+    }
+    _log(
+      'Steps=$steps'
+      '${meters != null ? " m=$meters" : ""}'
+      '${calories != null ? " kcal=$calories" : ""}',
+    );
+  }
+
+  /// Atualiza o cache local de SpO₂ (ex.: último valor conhecido na sessão).
+  void rememberSpo2(int? spo2) {
+    if (spo2 == null) return;
+    if (spo2 < 70 || spo2 > 100) return;
+    lastSpo2 = spo2;
+    lastSpo2At = DateTime.now();
+  }
+
   Future<void> _startHr(
     BluetoothCharacteristic hrControl,
     BluetoothCharacteristic hrMeasure,
@@ -495,8 +585,10 @@ class MiBandClient {
     _hrIdleWatch = null;
     await _chunkedSub?.cancel();
     await _hrSub?.cancel();
+    await _stepsSub?.cancel();
     _chunkedSub = null;
     _hrSub = null;
+    _stepsSub = null;
     _chunkedRead = null;
     if (_device != null) {
       try {
@@ -506,6 +598,11 @@ class MiBandClient {
     _device = null;
     _chunked = null;
     _privateKey = null;
+    lastSteps = null;
+    lastDistanceM = null;
+    lastCalories = null;
+    lastStepsAt = null;
+    // lastSpo2 kept as session cache for the on-device PQC demo.
     _clearHr('disconnect');
     _setState(MiBandState.idle);
   }
@@ -514,6 +611,7 @@ class MiBandClient {
     await disconnect();
     await _stateCtrl.close();
     await _hrCtrl.close();
+    await _stepsCtrl.close();
     await _logCtrl.close();
   }
 }

@@ -1,9 +1,11 @@
 mod api_ticket;
 mod commands;
+mod installed_apps;
 mod launcher;
 mod local_api;
 mod models;
 mod persist;
+mod presence_proof;
 mod state;
 mod supervisor;
 mod ws;
@@ -13,8 +15,8 @@ use std::sync::Arc;
 use tokio::sync::Mutex;
 
 use commands::{
-    get_config, get_status, open_gated_app, refresh_pairing_material, refresh_qr, save_config,
-    unpair,
+    get_config, get_status, list_installed_apps, open_gated_app, refresh_pairing_material,
+    refresh_qr, save_config, unpair,
 };
 use state::LabState;
 use ws::spawn_ws_server;
@@ -43,6 +45,7 @@ pub fn run() {
             refresh_qr,
             get_config,
             save_config,
+            list_installed_apps,
             unpair,
             open_gated_app
         ])

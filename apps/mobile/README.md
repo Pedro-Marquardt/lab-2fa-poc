@@ -1,10 +1,12 @@
-# Bioentropy Mobile (Flutter)
+# Wearable 2FA · Mobile (Flutter)
 
-Cliente de lab para **Mi Band**  + **lab 2FA** com desktop via QR + WebSocket.
+Portfolio client: **Mi Band** BLE + desktop 2FA (QR/WebSocket) + **on-device PQC** demo.
 
-Fluxo: scan BLE → New Auth Protocol (Huami) → HR ao vivo → scan QR desktop → `pair.register` → (se QR tiver `apiTicketId` + `apiBaseUrl`, completa ticket na API best-effort) → `challenge.result` (só `ok` + `bandMac`, **nunca** BPM na rede).
+1. Connect band → live HR + steps  
+2. **Generate PQC hash** → local seed (HR + steps + last SpO₂ if cached) → matrix → SHA3-256 + ML-KEM-512  
+3. Pair desktop → presence challenge (`ok` + `bandMac` only; biometrics never leave the phone)
 
-Contrato: [`packages/protocol/lab-host-mobile.md`](../../packages/protocol/lab-host-mobile.md). Desktop: [`apps/desktop`](../desktop/). API opcional: [`apps/api`](../api/).
+Contract: [`packages/protocol/lab-host-mobile.md`](../../packages/protocol/lab-host-mobile.md). Desktop: [`apps/desktop`](../desktop/).
 
 ## Setup
 
@@ -63,7 +65,7 @@ Com API ticket (desktop com `BIOENTROPY_API_URL`):
 {"v":1,"type":"pair.register","pairingNonce":"...","bandMac":"AA:BB:CC:DD:EE:FF","deviceLabel":"phone"}
 ```
 
-4. Quando o desktop envia `challenge.request`, o app exige presença ao vivo: ≥3 amostras de BPM (40–200), ≥2 valores distintos, span ≥2s, HR fresco (máx. 3s). Sem cache. Off-wrist / BPM colado → `ok=false`. Logs de BPM só no telemóvel. Responde:
+4. Quando o desktop envia `challenge.request`, o app exige presença ao vivo: ≥1 BPM válido (40–200) no stream + HR fresco (máx. 3s). Sem cache. Off-wrist → `ok=false`. Logs de BPM só no telemóvel. Responde:
 
 ```json
 {"v":1,"type":"challenge.result","challengeId":"...","ok":true,"bandMac":"...","reason":null}
@@ -73,11 +75,12 @@ Estados UI: **Unpaired** → **Paired** → **Challenge em curso** → **Result:
 
 Privacidade: BPM só no ecrã/memória; WS e logs de desafio não incluem valores de HR.
 
-## Estrutura
+## Structure
 
-- `lib/huami/` — UUIDs, ECDH, chunked framing, cliente Mi Band
-- `lib/lab/` — QR payload, WS client, BPM gate (booleano)
-- `lib/screens/qr_scan_screen.dart` — câmara (`mobile_scanner`)
-- `lib/config/env.dart` — leitura do `.env`
+- `lib/huami/` — Huami BLE / Mi Band client (HR + realtime steps)
+- `lib/lab/` — QR/WS 2FA, BPM gate, `bio_seed` + `pqc_demo`
+- `lib/widgets/seed_matrix.dart` — 16×16 seed visualization
+- `lib/screens/qr_scan_screen.dart` — camera QR
+- `lib/config/env.dart` — `.env`
 
-Ver `docs/research/miband-flutter-ble.md`.
+See `docs/research/miband-flutter-ble.md`.
