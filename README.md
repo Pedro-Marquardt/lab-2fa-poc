@@ -13,10 +13,11 @@ Not production auth. Not medical.
 | **A bot / remote script is not enough** | Unlock needs a **live** Mi Band HR session on the paired phone — not a stored flag. |
 | **“ok: true” over the wire is not verification** | Desktop only launches after recomputing `presenceProof` with its own ML-KEM shared secret. |
 | **Biometrics can stay on-device** | BPM, steps, SpO₂ cache, and the raw bio seed never leave the phone; the wire carries digests + a KEM proof. |
-| **Session crypto can be post-quantum ready** | Pair uses **ML-KEM-512** (NIST FIPS 203 family). Classical RSA/ECDH session keys are the ones a future cryptographically relevant quantum computer threatens; lattice KEMs are the migration path this lab exercises. |
+| **Bioentropy feeds the seed** | Live band metrics act as physical entropy → local 32-byte seed (wiped); only `seedDigest` is bound into the proof. |
+| **Session crypto can be post-quantum ready** | Pair uses **ML-KEM-512** (NIST FIPS 203). Quantum threatens classical key exchange; lattice KEMs are the migration this lab exercises. |
 | **Two secrets, two jobs** | Pairing keypair ≠ bio seed. Confusing them breaks the story — see below. |
 
-It does **not** prove production MFA, medical HR accuracy, or that wearables are unforgeable. It proves an architecture: **presence + PQC session + local seed binding**.
+It does **not** prove production MFA, medical HR accuracy, TRNG-grade entropy, or that wearables are unforgeable. It proves an architecture: **bioentropy seed + PQC session + verifiable presence**.
 
 ## Two secrets (do not confuse them)
 
@@ -37,11 +38,29 @@ presenceProof = SHA3(ss ‖ challengeId ‖ bandMac ‖ seedDigest)
 - `ss` — from ML-KEM encaps/decaps (session) → **what makes verification possible**
 - `seedDigest` — `SHA3(bioSeed)` for *this* unlock → binding / audit, discarded with the seed
 
-## Why post-quantum here?
+## Why bioentropy → seed (and how that meets quantum)
 
-Large-scale quantum computers (Shor) break the public-key schemes we still lean on for key exchange (RSA, finite-field / elliptic Diffie–Hellman). Symmetric crypto and SHA3-class hashes are far less exposed; the urgent migration is **key establishment**.
+**Bioentropy** here means treating the wearable snapshot (live HR, steps, cached SpO₂, …) as a **physical entropy source**: noisy, time-bound, hard to replay exactly, and inseparable from a body/device in the loop. That material is folded (SHAKE-256 in this lab) into a **32-byte bio seed**, visualized as the 16×16 matrix, then wiped. Only `seedDigest` ever leaves the phone.
 
-This POC uses **ML-KEM** so the unlock channel is already on the NIST post-quantum track: the desktop encapsulate / phone decapsulate step is the piece that would need to survive that transition — while the wearable gate answers a different question: *is a real device/person in the loop right now?*
+That is a different job from “password = BPM”:
+
+| Layer | Question it answers |
+|-------|---------------------|
+| **Bioentropy seed** | Was this unlock fed by a **fresh physical snapshot**, not a canned file or bot? |
+| **ML-KEM session** | Can the desktop **cryptographically verify** the paired phone without trusting a bare `ok: true`? |
+
+Post-quantum algorithms still need **unpredictable seeds** for key material. A cryptographically relevant quantum computer (Shor) breaks RSA/ECDH *algorithms*; it does not invent free entropy for you. The Bioentropy product thesis (MCU + Secure Element) is: derive **ephemeral PQC keys from bioentropy + physiological fingerprint on-device**, wipe immediately, never upload raw biometrics. This lab approximates that story with a Mi Band + phone: **body-sourced entropy → local seed → digests**, while **ML-KEM** carries the NIST (FIPS 203) key-establishment path that survives the quantum migration.
+
+So the pair is intentional:
+
+1. **Quantum-safe channel** — ML-KEM encaps/decaps (session `ss`)  
+2. **Human/physical binding** — bioentropy seed digest inside `presenceProof`  
+
+Without (1), verification is classical and aging. Without (2), PQC alone does not prove a human was present.
+
+## Why ML-KEM on the wire?
+
+Large-scale quantum computers threaten the public-key schemes we still use for key exchange (RSA, finite-field / elliptic Diffie–Hellman). Symmetric crypto and SHA3-class hashes are far less exposed; the urgent migration is **key establishment**. This POC uses **ML-KEM-512** so unlock verification already sits on that track — while bioentropy answers *presence*, not *algorithm*.
 
 ## Step-by-step flow
 
