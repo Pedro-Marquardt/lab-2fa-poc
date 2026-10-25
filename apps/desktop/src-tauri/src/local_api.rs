@@ -21,6 +21,7 @@ pub fn spawn_local_api(state: SharedState) {
     tauri::async_runtime::spawn(async move {
         let app = Router::new()
             .route("/v1/open", post(open_handler))
+            .route("/v1/lab/status", axum::routing::get(lab_status_handler))
             .route("/health", axum::routing::get(|| async { "ok" }))
             .with_state(state);
 
@@ -37,6 +38,22 @@ pub fn spawn_local_api(state: SharedState) {
             eprintln!("[lab-gate] local API exited: {e}");
         }
     });
+}
+
+async fn lab_status_handler(
+    State(state): State<SharedState>,
+) -> Result<Json<serde_json::Value>, StatusCode> {
+    let guard = state.lock().await;
+    Ok(Json(serde_json::json!({
+        "pairingNonce": guard.pairing_nonce,
+        "synced": guard.is_synced(),
+        "mobileOnline": guard.mobile_online,
+        "bandReady": guard.band_ready,
+        "hasPairing": guard.pairing.is_some(),
+        "bandMac": guard.pairing.as_ref().map(|p| p.band_mac.clone()),
+        "hasKem": guard.kem_public_key.is_some(),
+        "wsUrl": guard.ws_url(),
+    })))
 }
 
 async fn open_handler(

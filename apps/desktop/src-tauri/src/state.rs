@@ -33,6 +33,8 @@ pub struct LabState {
     pub api_base_url: Option<String>,
     /// Outbound JSON frames to the connected mobile client.
     pub mobile_tx: Option<mpsc::UnboundedSender<String>>,
+    /// Monotonic id for the active mobile WS — teardown must not clear a newer conn.
+    pub mobile_conn_id: Option<u64>,
     pub pending_challenges: HashMap<String, PendingChallenge>,
     /// Active OS-gate leases (appId → root PID we spawned after challenge).
     pub leases: LeaseMap,
@@ -52,6 +54,7 @@ impl LabState {
             api_ticket_id: None,
             api_base_url: None,
             mobile_tx: None,
+            mobile_conn_id: None,
             pending_challenges: HashMap::new(),
             leases: HashMap::new(),
         }

@@ -8,10 +8,11 @@ use crate::persist;
 use crate::state::{new_nonce, SharedState};
 use crate::ws::emit_status;
 
-/// Rotate local nonce; if `BIOENTROPY_API_URL` is set, mint an API ticket and use its nonce.
+/// Build next pairing material, validate QR render, then commit atomically.
+/// Avoids rotating `pairing_nonce` while the UI still shows the previous QR.
 pub async fn refresh_pairing_material(state: &SharedState) {
     let api_base = api_base_url_from_env();
-    match api_base {
+    let (pairing_nonce, api_ticket_id, api_base_url) = match api_base {
         Some(base) => {
             // Desktop may call API on loopback; phone needs a LAN-reachable base in the QR.
             let qr_base = {
@@ -21,27 +22,33 @@ pub async fn refresh_pairing_material(state: &SharedState) {
             };
             match create_pairing_ticket(&base).await {
                 Ok((ticket_id, pairing_nonce)) => {
-                    let mut guard = state.lock().await;
-                    guard.pairing_nonce = pairing_nonce;
-                    guard.api_ticket_id = Some(ticket_id);
-                    guard.api_base_url = Some(qr_base);
-                    eprintln!("[lab-api] pairing ticket ready (apiBaseUrl for phone={})", guard.api_base_url.as_deref().unwrap_or("?"));
+                    eprintln!(
+                        "[lab-api] pairing ticket ready (apiBaseUrl for phone={qr_base})"
+                    );
+                    (pairing_nonce, Some(ticket_id), Some(qr_base))
                 }
                 Err(e) => {
                     eprintln!("[lab-api] ticket create failed ({e}); using local nonce");
-                    let mut guard = state.lock().await;
-                    guard.pairing_nonce = new_nonce();
-                    guard.api_ticket_id = None;
-                    guard.api_base_url = None;
+                    (new_nonce(), None, None)
                 }
             }
         }
-        None => {
-            let mut guard = state.lock().await;
-            guard.pairing_nonce = new_nonce();
-            guard.api_ticket_id = None;
-            guard.api_base_url = None;
-        }
+        None => (new_nonce(), None, None),
+    };
+
+    let mut guard = state.lock().await;
+    guard.refresh_lan_ip();
+    let prev_nonce = guard.pairing_nonce.clone();
+    guard.pairing_nonce = pairing_nonce;
+    guard.api_ticket_id = api_ticket_id;
+    guard.api_base_url = api_base_url;
+
+    // Roll back if the new payload cannot be rendered as a QR (keeps UI/nonce aligned).
+    if let Err(e) = guard.qr_svg() {
+        eprintln!("[lab-api] QR render failed ({e}); keeping previous nonce");
+        guard.pairing_nonce = prev_nonce;
+        guard.api_ticket_id = None;
+        guard.api_base_url = None;
     }
 }
 

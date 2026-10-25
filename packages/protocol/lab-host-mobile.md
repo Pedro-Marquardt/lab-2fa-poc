@@ -35,6 +35,18 @@ Phone generates an **ML-KEM-512** keypair for the session, keeps `sk` in memory,
 }
 ```
 
+Desktop replies before the phone marks Sync:
+
+```json
+{ "v": 1, "type": "pair.ok" }
+```
+
+```json
+{ "v": 1, "type": "pair.error", "reason": "pairingNonce mismatch" }
+```
+
+`synced` on the desktop requires a successful `pair.register` **this WS session** plus `bandReady` (never from persisted pairing alone).
+
 ## Presence update
 
 ```json

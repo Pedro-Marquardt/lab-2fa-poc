@@ -393,10 +393,17 @@ window.addEventListener("DOMContentLoaded", async () => {
     }
   });
 
-  await refreshStatus();
-  await loadConfig();
-
   await listen("lab-status", (event) => {
     renderStatus(event.payload);
   });
+
+  // Prefer refresh_qr so the first QR matches the committed nonce (API ticket).
+  try {
+    const status = await invoke("refresh_qr");
+    renderStatus(status);
+  } catch (err) {
+    console.warn("refresh_qr on boot failed, falling back to get_status", err);
+    await refreshStatus();
+  }
+  await loadConfig();
 });

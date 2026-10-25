@@ -10,9 +10,9 @@ E2E with phone: [`apps/mobile`](../mobile/). Optional audit API: [`apps/api`](..
 2. Runs a **loopback gate API on `127.0.0.1:8788`** (`POST /v1/open`) for dock/CLI wrappers
 3. On boot + while running: **process supervisor** kills apps with Require 2FA unless they have a post-challenge **lease** (~10 min max TTL, or until the app is closed — **not** a refresh token). Failed challenge **revokes** the lease and kills the app. Reset leases: close the gated app, fail a challenge, or restart Lab 2FA (boot clears all leases).
 4. Shows a **QR** with the frozen pairing payload (`apiTicketId: null` unless API URL is set)
-5. Accepts `pair.register` from mobile → persists `{ bandMac, pairedAt }` locally
-6. **Apps** tab: curated launchers (browser, terminal, file manager, editor) + custom path + require-2FA toggle
-7. With 2FA ON → Open disabled until mobile paired+online → `challenge.request` → wait for `challenge.result` → verify `bandMac` → spawn + lease; on fail/timeout/unpaired do **not** launch
+5. Accepts `pair.register` (nonce + ML-KEM pk) → `pair.ok` / `pair.error` → persists `{ bandMac, pairedAt }` locally
+6. **Apps** tab: pick installed apps + require-2FA toggle (no Custom/Editor stubs)
+7. With 2FA ON → Open needs **synced** (pair + mobile online + band ready) → ML-KEM encaps → `challenge.request` + `kemCiphertext` → verify `presenceProof` → spawn + lease; on fail/timeout do **not** launch
 
 ### Optional API tickets
 
@@ -49,10 +49,24 @@ With API:
 }
 ```
 
-Mobile → desktop:
+Mobile → desktop (pair):
 
 ```json
-{ "v": 1, "type": "pair.register", "pairingNonce": "...", "bandMac": "...", "deviceLabel": "phone" }
+{
+  "v": 1,
+  "type": "pair.register",
+  "pairingNonce": "...",
+  "bandMac": "...",
+  "deviceLabel": "phone",
+  "kemPublicKey": "<1600 hex>",
+  "kemPubFp": "<64 hex>"
+}
+```
+
+Desktop → mobile (ACK):
+
+```json
+{ "v": 1, "type": "pair.ok" }
 ```
 
 Desktop → mobile (when Open + 2FA):
@@ -64,7 +78,8 @@ Desktop → mobile (when Open + 2FA):
   "challengeId": "uuid",
   "purpose": "open_app",
   "appId": "...",
-  "expiresAt": "iso"
+  "expiresAt": "iso",
+  "kemCiphertext": "<1536 hex>"
 }
 ```
 
@@ -77,11 +92,15 @@ Mobile → desktop:
   "challengeId": "...",
   "ok": true,
   "bandMac": "...",
-  "reason": null
+  "presenceProof": "<64 hex>",
+  "seedDigest": "<64 hex>",
+  "pqcSha3": "<64 hex>",
+  "pqcKemFp": "<64 hex>"
 }
 ```
 
-Local data (no biometrics): `~/.local/share/bioentropy-lab2fa/{pairing,config}.json`
+Local data (no biometrics): `~/.local/share/bioentropy-lab2fa/{pairing,config}.json`  
+Debug (loopback): `GET http://127.0.0.1:8788/v1/lab/status`
 
 ## Prerequisites (Linux)
 

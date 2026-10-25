@@ -25,6 +25,7 @@ class LabWsClient {
   StreamSubscription<dynamic>? _sub;
   PairingQr? _pairing;
   PairingSessionPqc? _session;
+  Completer<void>? _pairAck;
 
   final _statusCtrl = StreamController<LabWsStatus>.broadcast();
   final _logCtrl = StreamController<String>.broadcast();
@@ -77,14 +78,23 @@ class LabWsClient {
       rethrow;
     }
 
+    final ack = Completer<void>();
+    _pairAck = ack;
+
     _sub = channel.stream.listen(
       _onMessage,
       onError: (Object e) {
         _log('WS erro: $e');
         _setStatus(LabWsStatus.error);
+        if (!ack.isCompleted) {
+          ack.completeError(e);
+        }
       },
       onDone: () {
         _log('WS fechado');
+        if (!ack.isCompleted) {
+          ack.completeError(StateError('WS fechado antes de pair.ok'));
+        }
         if (_status != LabWsStatus.error) {
           _setStatus(LabWsStatus.disconnected);
         }
@@ -102,9 +112,22 @@ class LabWsClient {
     _send(reg.toJson());
     _log(
       'pair.register enviado (bandMac=$bandMac, '
-      'kemPubFp=${session.kemPubFpHex.substring(0, 16)}…)',
+      'kemPubFp=${session.kemPubFpHex.substring(0, 16)}…, '
+      'pkHexLen=${session.publicKeyHex.length}, '
+      'nonceLen=${qr.pairingNonce.length})',
     );
+
+    try {
+      await ack.future.timeout(const Duration(seconds: 10));
+    } on Object catch (e) {
+      _setStatus(LabWsStatus.error);
+      _log('pair.register falhou: $e');
+      await disconnect();
+      rethrow;
+    }
+
     _setStatus(LabWsStatus.paired);
+    _log('pair.ok — sincronizado com desktop');
 
     final ticketId = qr.apiTicketId;
     final apiBase = qr.apiBaseUrl;
@@ -132,7 +155,20 @@ class LabWsClient {
       if (decoded is! Map<String, dynamic>) return;
       if (decoded['v'] != 1) return;
       final type = decoded['type'];
-      if (type == 'challenge.request') {
+      if (type == 'pair.ok') {
+        _log('pair.ok');
+        final ack = _pairAck;
+        if (ack != null && !ack.isCompleted) {
+          ack.complete();
+        }
+      } else if (type == 'pair.error') {
+        final reason = decoded['reason']?.toString() ?? 'pair.error';
+        _log('pair.error reason=$reason');
+        final ack = _pairAck;
+        if (ack != null && !ack.isCompleted) {
+          ack.completeError(StateError(reason));
+        }
+      } else if (type == 'challenge.request') {
         final req = ChallengeRequest.fromJson(decoded);
         _log('challenge.request id=${req.challengeId} purpose=${req.purpose}');
         _setStatus(LabWsStatus.challengeInProgress);
@@ -189,6 +225,11 @@ class LabWsClient {
   }
 
   Future<void> disconnect() async {
+    final pending = _pairAck;
+    _pairAck = null;
+    if (pending != null && !pending.isCompleted) {
+      pending.completeError(StateError('disconnect'));
+    }
     await _sub?.cancel();
     _sub = null;
     try {
